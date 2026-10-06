@@ -25,16 +25,18 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
-#include <QFileDialog>
+#include "ui/StudioFileDialog.hpp"
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QImage>
+#include <QInputDialog>
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QProcessEnvironment>
 #include <QStatusBar>
+#include <QStringList>
 #include <QToolBar>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -128,8 +130,9 @@ void MainWindow::create_actions() {
   auto *open_session_action = new QAction(QStringLiteral("Open Studio Session..."), this);
   connect(open_session_action, &QAction::triggered, this, &MainWindow::open_session_dialog);
   auto *save_session_action = new QAction(QStringLiteral("Save Studio Session"), this);
-  save_session_action->setShortcut(QKeySequence::Save);
   connect(save_session_action, &QAction::triggered, this, [this]() {
+    if (refinement_model_.has_map() && !save_2d_interactively(false)) return;
+    if (session_.empty()) return;
     QString error;
     if (!ensure_work_dir(&error) || !session_.save(&error)) {
       QMessageBox::critical(this, QStringLiteral("Save Session failed"), error);
@@ -162,6 +165,12 @@ void MainWindow::create_actions() {
   file_menu->addAction(open_action);
   file_menu->addAction(open_package_action);
   file_menu->addAction(open_occupancy_action);
+  save_2d_action_ = file_menu->addAction(QStringLiteral("Save 2D Map"));
+  save_2d_action_->setShortcut(QKeySequence::Save);
+  connect(save_2d_action_, &QAction::triggered, this, &MainWindow::save_2d_map_dialog);
+  save_2d_as_action_ = file_menu->addAction(QStringLiteral("Save 2D Map As..."));
+  save_2d_as_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
+  connect(save_2d_as_action_, &QAction::triggered, this, &MainWindow::save_2d_map_as_dialog);
   file_menu->addSeparator();
   file_menu->addAction(open_session_action);
   file_menu->addAction(save_session_action);
@@ -289,6 +298,10 @@ void MainWindow::create_actions() {
   view_menu->addAction(show_axis_action_);
   view_menu->addAction(dark_background_action_);
   view_menu->addAction(height_coloring_action_);
+  auto *scalar_color_action = new QAction(QStringLiteral("Color by Scalar Field..."), this);
+  connect(scalar_color_action, &QAction::triggered,
+          this, &MainWindow::color_by_scalar_field_dialog);
+  view_menu->addAction(scalar_color_action);
   auto *point_menu = view_menu->addMenu(QStringLiteral("Point Size"));
   point_menu->addAction(increase_point_action);
   point_menu->addAction(decrease_point_action);
@@ -549,6 +562,45 @@ void MainWindow::set_source(const QString &pcd_path, const QString &package_dir)
   refresh_workflow();
 }
 
+bool MainWindow::set_scalar_color_field(
+    const QString &field_name, std::optional<float> minimum,
+    std::optional<float> maximum, QString *error) {
+  std::string detail;
+  if (!viewer_->set_scalar_coloring(field_name.toStdString(), minimum, maximum,
+                                    &detail)) {
+    if (error) *error = QString::fromStdString(detail);
+    return false;
+  }
+  if (height_coloring_action_) height_coloring_action_->setChecked(false);
+  statusBar()->showMessage(
+      QStringLiteral("Coloring by %1 [%2, %3]")
+          .arg(field_name)
+          .arg(viewer_->scalar_color_range().minimum, 0, 'g', 4)
+          .arg(viewer_->scalar_color_range().maximum, 0, 'g', 4), 6000);
+  return true;
+}
+
+void MainWindow::color_by_scalar_field_dialog() {
+  QStringList fields;
+  for (const auto &entry : viewer_->cloud().scalar_fields) {
+    fields.push_back(QString::fromStdString(entry.first));
+  }
+  if (fields.isEmpty()) {
+    QMessageBox::information(this, QStringLiteral("Scalar Field"),
+                             QStringLiteral("The loaded PCD has no numeric scalar fields."));
+    return;
+  }
+  bool accepted = false;
+  const QString field = QInputDialog::getItem(
+      this, QStringLiteral("Color by Scalar Field"), QStringLiteral("Point field:"),
+      fields, 0, false, &accepted);
+  if (!accepted) return;
+  QString error;
+  if (!set_scalar_color_field(field, std::nullopt, std::nullopt, &error)) {
+    QMessageBox::warning(this, QStringLiteral("Scalar Field"), error);
+  }
+}
+
 bool MainWindow::open_pcd(const QString &path, QString *error) {
   LoadedPointCloud loaded;
   std::string loader_error;
@@ -556,10 +608,22 @@ bool MainWindow::open_pcd(const QString &path, QString *error) {
     if (error) *error = QString::fromStdString(loader_error);
     return false;
   }
+  if (!protect_unsaved_edits()) {
+    if (error) *error = QStringLiteral("Switch cancelled. Current edits preserved.");
+    return false;
+  }
+  refinement_model_.clear();
+  occupancy_viewer_->clear_map();
+  saved_2d_directory_.clear();
+  saved_2d_fingerprint_.clear();
+  saved_3d_fingerprint_.clear();
+  review_mode_ = false;
+  confirm_review_action_->setEnabled(false);
   selection_manager_.reset(loaded.point_count());
   source_path_ = path;
   show_3d_view();
   viewer_->set_cloud(std::move(loaded), QFileInfo(path).fileName());
+  if (height_coloring_action_) height_coloring_action_->setChecked(true);
   z_min_spin_->setValue(viewer_->cloud().min_bound.z());
   z_max_spin_->setValue(viewer_->cloud().max_bound.z());
   set_source(path, QString());
@@ -622,11 +686,30 @@ bool MainWindow::load_navigation_dir_into_2d(const QString &directory, QString *
     return false;
   }
   const std::vector<RefinementOperation> previous = refinement_model_.history();
-  refinement_model_.set_base_map(map, metadata);
+  RefinementModel restored;
+  restored.set_base_map(map, metadata);
+  const QString history = QDir(directory).filePath("map_refinement.yaml");
+  if (previous.empty() && QFileInfo::exists(history)) {
+    if (!restored.load_refinement_yaml(history.toStdString(), &loader_error)) {
+      if (error) *error = QString::fromStdString(loader_error);
+      return false;
+    }
+    for (std::size_t i = 0; i < map.cells().size(); ++i) {
+      if (restored.effective_at_index(i) != map.cells()[i]) {
+        if (error) *error = QStringLiteral("Edit history does not match the 2D map.");
+        return false;
+      }
+    }
+  }
+  refinement_model_ = std::move(restored);
   occupancy_viewer_->set_refinement_model(&refinement_model_);
   occupancy_viewer_->set_map(std::move(map));
   if (!previous.empty() && !replay_2d_history(previous)) {
     statusBar()->showMessage(QStringLiteral("Some 2D edits could not be replayed on the new layers"), 6000);
+  }
+  if (previous.empty()) {
+    saved_2d_fingerprint_ = QString::fromStdString(refinement_model_.active_fingerprint());
+    saved_2d_directory_ = QFileInfo::exists(history) ? directory : QString();
   }
   sync_edit_fingerprints();
   return true;
@@ -666,7 +749,28 @@ bool MainWindow::open_occupancy_map(const QString &path, QString *error) {
     if (error) *error = QString::fromStdString(loader_error);
     return false;
   }
-  refinement_model_.set_base_map(map, metadata);
+  RefinementModel restored;
+  restored.set_base_map(map, metadata);
+  const QString history = QDir(QFileInfo(path).absolutePath()).filePath("map_refinement.yaml");
+  if (QFileInfo::exists(history)) {
+    if (!restored.load_refinement_yaml(history.toStdString(), &loader_error)) {
+      if (error) *error = QString::fromStdString(loader_error);
+      return false;
+    }
+    for (std::size_t i = 0; i < map.cells().size(); ++i) {
+      if (restored.effective_at_index(i) != map.cells()[i]) {
+        if (error) *error = QStringLiteral("Edit history does not match the map contents. Current map preserved.");
+        return false;
+      }
+    }
+  }
+  if (!protect_unsaved_edits()) {
+    if (error) *error = QStringLiteral("Switch cancelled. Current edits preserved.");
+    return false;
+  }
+  refinement_model_ = std::move(restored);
+  saved_2d_fingerprint_ = QString::fromStdString(refinement_model_.active_fingerprint());
+  saved_2d_directory_ = QFileInfo::exists(history) ? QFileInfo(path).absolutePath() : QString();
   occupancy_viewer_->set_refinement_model(&refinement_model_);
   occupancy_viewer_->set_map(std::move(map));
   if (!session_.empty()) {
@@ -739,15 +843,19 @@ bool MainWindow::open_session(const QString &session_file, QString *error) {
   session_.publish_target() = target;
   workflow_panel_->set_converter(converter);
   workflow_panel_->set_publish_target(target);
-  const QString navigation = session_.effective_navigation_dir().isEmpty()
+  QString navigation = session_.effective_navigation_dir().isEmpty()
                                  ? session_.record(WorkflowSession::Navigation).path
                                  : session_.effective_navigation_dir();
+  if (!session_.editor_map_path().isEmpty()) navigation = QFileInfo(session_.editor_map_path()).absolutePath();
   if (!navigation.isEmpty() && QFileInfo::exists(QDir(navigation).filePath(QStringLiteral("map.yaml")))) {
     QString map_error;
-    load_navigation_dir_into_2d(navigation, &map_error);
+    if (!load_navigation_dir_into_2d(navigation, &map_error)) {
+      if (error) *error = map_error;
+      return false;
+    }
+    show_2d_view();
   }
-  // In-memory edits are not persisted; the recorded fingerprints tell the
-  // user which stages must be re-run once they redo their edits.
+  // Saved 2D outputs include a matching history sidecar (also restores keepouts).
   refresh_workflow();
   statusBar()->showMessage(QStringLiteral("Restored session: %1").arg(session_file), 6000);
   return true;
@@ -757,7 +865,7 @@ bool MainWindow::open_session(const QString &session_file, QString *error) {
 // Dialogs
 
 void MainWindow::open_pcd_dialog() {
-  const QString path = QFileDialog::getOpenFileName(
+  const QString path = StudioFileDialog::getOpenFileName(
       this, QStringLiteral("Open PCD"), QString(), QStringLiteral("Point Cloud (*.pcd);;All Files (*)"));
   if (path.isEmpty()) return;
   QString error;
@@ -765,7 +873,7 @@ void MainWindow::open_pcd_dialog() {
 }
 
 void MainWindow::open_mapping_package_dialog() {
-  const QString directory = QFileDialog::getExistingDirectory(
+  const QString directory = StudioFileDialog::getExistingDirectory(
       this, QStringLiteral("Open mapping package (map.pcd + manifest.yaml) or map package"));
   if (directory.isEmpty()) return;
   QString error;
@@ -775,7 +883,7 @@ void MainWindow::open_mapping_package_dialog() {
 }
 
 void MainWindow::open_occupancy_map_dialog() {
-  const QString path = QFileDialog::getOpenFileName(
+  const QString path = StudioFileDialog::getOpenFileName(
       this, QStringLiteral("Open Occupancy Map"), QString(), QStringLiteral("Nav2 map (*.yaml *.yml);;All Files (*)"));
   if (path.isEmpty()) return;
   QString error;
@@ -785,7 +893,7 @@ void MainWindow::open_occupancy_map_dialog() {
 }
 
 void MainWindow::open_session_dialog() {
-  const QString path = QFileDialog::getOpenFileName(
+  const QString path = StudioFileDialog::getOpenFileName(
       this, QStringLiteral("Open Studio Session"), QString(), QStringLiteral("studio_session.yaml (*.yaml)"));
   if (path.isEmpty()) return;
   QString error;
@@ -793,7 +901,7 @@ void MainWindow::open_session_dialog() {
 }
 
 void MainWindow::save_view_dialog() {
-  const QString path = QFileDialog::getSaveFileName(
+  const QString path = StudioFileDialog::getSaveFileName(
       this, QStringLiteral("Save View"), QStringLiteral("view.yaml"), QStringLiteral("YAML (*.yaml *.yml);;All Files (*)"));
   if (path.isEmpty()) return;
   QString error;
@@ -810,7 +918,7 @@ void MainWindow::export_refinement_rules_dialog() {
                              QStringLiteral("No active 3D deletions to export."));
     return;
   }
-  const QString path = QFileDialog::getSaveFileName(
+  const QString path = StudioFileDialog::getSaveFileName(
       this, QStringLiteral("Export refinement rules"),
       session_.empty() ? QStringLiteral("refinement.yaml") : session_.refinement_rules_path(),
       QStringLiteral("YAML (*.yaml *.yml)"));
@@ -828,7 +936,7 @@ void MainWindow::export_navigation_patch_dialog() {
     QMessageBox::information(this, QStringLiteral("Export 2D Patch"), QStringLiteral("Open a 2D map first."));
     return;
   }
-  const QString path = QFileDialog::getSaveFileName(
+  const QString path = StudioFileDialog::getSaveFileName(
       this, QStringLiteral("Export patch_nav_map YAML"),
       session_.empty() ? QStringLiteral("navigation_patch.yaml") : session_.navigation_patch_path(),
       QStringLiteral("YAML (*.yaml *.yml)"));
@@ -848,7 +956,7 @@ void MainWindow::export_clean_map_dialog() {
     QMessageBox::information(this, QStringLiteral("Export Clean Map"), QStringLiteral("Open a PCD before exporting."));
     return;
   }
-  const QString parent = QFileDialog::getExistingDirectory(
+  const QString parent = StudioFileDialog::getExistingDirectory(
       this, QStringLiteral("Choose export parent directory"),
       source_path_.isEmpty() ? QString() : QFileInfo(source_path_).absolutePath());
   if (parent.isEmpty()) return;
@@ -925,7 +1033,7 @@ void MainWindow::save_refinement_dialog() {
     QMessageBox::information(this, QStringLiteral("Save 2D Refinement"), QStringLiteral("Open an occupancy map first."));
     return;
   }
-  const QString path = QFileDialog::getSaveFileName(
+  const QString path = StudioFileDialog::getSaveFileName(
       this, QStringLiteral("Save 2D Refinement History"), QStringLiteral("map_refinement.yaml"),
       QStringLiteral("YAML (*.yaml *.yml);;All Files (*)"));
   if (path.isEmpty()) return;
@@ -937,19 +1045,107 @@ void MainWindow::save_refinement_dialog() {
   statusBar()->showMessage(QStringLiteral("Saved refinement: %1").arg(path), 6000);
 }
 
+bool MainWindow::has_unsaved_2d_edits() const {
+  return refinement_model_.has_map() &&
+      saved_2d_fingerprint_ != QString::fromStdString(refinement_model_.active_fingerprint());
+}
+
+bool MainWindow::save_occupancy_map(const QString &directory, QString *error) {
+  if (!refinement_model_.has_map()) {
+    if (error) *error = QStringLiteral("Open a 2D map first.");
+    return false;
+  }
+  const QString output = QDir(directory).absolutePath();
+  const QString base = QFileInfo(QString::fromStdString(refinement_model_.base_map().yaml_path())).absolutePath();
+  if (QDir::cleanPath(output) == QDir::cleanPath(base) && saved_2d_directory_.isEmpty()) {
+    if (error) *error = QStringLiteral("Save to a new directory to preserve the original map.");
+    return false;
+  }
+  std::string detail;
+  if (!refinement_model_.export_navigation_map(output.toStdString(), &detail)) {
+    if (error) *error = QString::fromStdString(detail);
+    return false;
+  }
+  saved_2d_directory_ = output;
+  saved_2d_fingerprint_ = QString::fromStdString(refinement_model_.active_fingerprint());
+  session_.set_editor_map_path(QDir(output).filePath("map.yaml"));
+  if (!session_.empty() && session_.state(WorkflowSession::Navigation) == StageState::Fresh &&
+      (session_.fixed_pipeline_available() || session_.navigation_uses_fixed_pipeline())) {
+    session_.mark_done(WorkflowSession::Patch, output,
+        WorkflowSession::sha256_file(QDir(output).filePath("map.pgm")), QStringLiteral("saved edited 2D map"));
+    save_session_quietly();
+  }
+  refresh_workflow();
+  statusBar()->showMessage(QStringLiteral("2D map saved: %1").arg(output), 15000);
+  return true;
+}
+
+bool MainWindow::save_2d_interactively(bool choose_directory) {
+  if (!refinement_model_.has_map()) return false;
+  QString output = saved_2d_directory_;
+  if (choose_directory || output.isEmpty()) {
+    const QString parent = StudioFileDialog::getExistingDirectory(this,
+        QStringLiteral("Choose a save location (a new edited-map directory will be created here)"),
+        QFileInfo(QString::fromStdString(refinement_model_.base_map().yaml_path())).absolutePath());
+    if (parent.isEmpty()) return false;
+    output = QDir(parent).filePath(QStringLiteral("edited_map_%1")
+        .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz")));
+  }
+  QString error;
+  if (!save_occupancy_map(output, &error)) {
+    QMessageBox::critical(this, QStringLiteral("Failed to save 2D map"), error);
+    return false;
+  }
+  return true;
+}
+
+void MainWindow::save_2d_map_dialog() { save_2d_interactively(false); }
+void MainWindow::save_2d_map_as_dialog() { save_2d_interactively(true); }
+
+bool MainWindow::protect_unsaved_edits() {
+  if (tool_runner_.is_running()) {
+    QMessageBox::information(this, QStringLiteral("Processing"), QStringLiteral("Wait for the task to finish or cancel it before switching maps."));
+    return false;
+  }
+  const bool dirty_3d = selection_manager_.has_active_deletes() &&
+      session_.state(WorkflowSession::Refine) != StageState::Fresh &&
+      saved_3d_fingerprint_ != selection_manager_.active_fingerprint();
+  if (!has_unsaved_2d_edits() && !dirty_3d) return true;
+  const auto answer = QMessageBox::question(this, QStringLiteral("Unsaved edits"),
+      QStringLiteral("Save current edits before continuing?"),
+      QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+  if (answer == QMessageBox::Cancel) return false;
+  if (answer == QMessageBox::Discard) return true;
+  if (has_unsaved_2d_edits() && !save_2d_interactively(false)) return false;
+  if (dirty_3d) {
+    QString error;
+    if (!ensure_work_dir(&error) ||
+        !selection_manager_.write_refinement_rules(session_.refinement_rules_path(), session_.source_pcd(), &error) ||
+        !session_.save(&error)) {
+      QMessageBox::critical(this, QStringLiteral("Save failed; edits preserved"), error);
+      return false;
+    }
+    saved_3d_fingerprint_ = selection_manager_.active_fingerprint();
+  }
+  return true;
+}
+
 void MainWindow::export_navigation_map_dialog() {
   if (!refinement_model_.has_map()) {
     QMessageBox::information(this, QStringLiteral("Export Edited PGM"), QStringLiteral("Open an occupancy map first."));
     return;
   }
-  const QString parent = QFileDialog::getExistingDirectory(
+  const QString parent = StudioFileDialog::getExistingDirectory(
       this, QStringLiteral("Choose output parent (preview only, not a navigation contract)"),
       QFileInfo(QString::fromStdString(refinement_model_.base_map().yaml_path())).absolutePath());
   if (parent.isEmpty()) return;
   const QString output = QDir(parent).filePath(QStringLiteral("navigation_map_preview"));
-  std::string error;
-  if (!refinement_model_.export_navigation_map(output.toStdString(), &error)) {
-    QMessageBox::critical(this, QStringLiteral("Export failed"), QString::fromStdString(error));
+  if (QFileInfo::exists(QDir(output).filePath("map.yaml")) &&
+      QMessageBox::question(this, QStringLiteral("Overwrite the exported map?"), output,
+          QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes) return;
+  QString error;
+  if (!save_occupancy_map(output, &error)) {
+    QMessageBox::critical(this, QStringLiteral("Export failed"), error);
     return;
   }
   statusBar()->showMessage(QStringLiteral("Exported edited PGM preview: %1").arg(output), 8000);
@@ -1015,6 +1211,9 @@ void MainWindow::confirm_mapping_review() {
   session_.mark_done(WorkflowSession::Patch, review_output_,
                      WorkflowSession::sha256_file(output_map),
                      QStringLiteral("confirmed by lightweight 2D review"));
+  saved_2d_fingerprint_ = QString::fromStdString(refinement_model_.active_fingerprint());
+  saved_2d_directory_ = review_output_;
+  session_.set_editor_map_path(QDir(review_output_).filePath("map.yaml"));
   save_session_quietly();
   statusBar()->showMessage(QStringLiteral("Confirmed map saved: %1").arg(review_output_), 12000);
   QMessageBox::information(
@@ -1195,7 +1394,7 @@ void MainWindow::sync_edit_fingerprints() {
   // Forbidden zones do not change the raster; only patch edits mark the
   // navigation layers stale. Zones still ride along in pipeline.yaml.
   session_.set_patch_fingerprint(
-      refinement_model_.patch_edit_count() > 0
+      refinement_model_.has_active_operations()
           ? QString::fromStdString(refinement_model_.active_fingerprint())
           : QString());
   refresh_workflow();
@@ -1204,6 +1403,8 @@ void MainWindow::sync_edit_fingerprints() {
 void MainWindow::refresh_workflow() {
   if (!workflow_panel_) return;
   workflow_panel_->refresh(session_, tool_runner_.is_running());
+  save_2d_action_->setEnabled(refinement_model_.has_map() && !tool_runner_.is_running());
+  save_2d_as_action_->setEnabled(refinement_model_.has_map() && !tool_runner_.is_running());
   if (edit_state_label_) {
     QStringList parts;
     if (session_.has_3d_edits()) {
@@ -1304,11 +1505,11 @@ void MainWindow::run_all_pending() {
     step_queue_.push_back([this]() { run_refine(); });
   }
   step_queue_.push_back([this]() {
-    if (session_.state(WorkflowSession::Relocalization) != StageState::Fresh) run_relocalization();
+    if (session_.state(WorkflowSession::Navigation) != StageState::Fresh) run_navigation();
     else continue_queue();
   });
   step_queue_.push_back([this]() {
-    if (session_.state(WorkflowSession::Navigation) != StageState::Fresh) run_navigation();
+    if (session_.state(WorkflowSession::Relocalization) != StageState::Fresh) run_relocalization();
     else continue_queue();
   });
   step_queue_.push_back([this]() {
@@ -1401,6 +1602,7 @@ void MainWindow::run_relocalization() {
 }
 
 void MainWindow::run_navigation() {
+  if (run_mapping_algorithms()) return;
   QString error;
   if (!ensure_work_dir(&error)) return fail_queue(error);
   if (session_.has_3d_edits() && session_.state(WorkflowSession::Refine) != StageState::Fresh) {
@@ -1440,14 +1642,38 @@ void MainWindow::run_navigation() {
 }
 
 void MainWindow::run_patch() {
+  if (session_.empty()) { save_2d_map_dialog(); return; }
   QString error;
   if (!ensure_work_dir(&error)) return fail_queue(error);
-  if (!refinement_model_.has_map() || refinement_model_.patch_edit_count() == 0) {
+  if (!refinement_model_.has_map() || !refinement_model_.has_active_operations()) {
     statusBar()->showMessage(QStringLiteral("No 2D raster edits to patch"), 4000);
     return continue_queue();
   }
   if (session_.state(WorkflowSession::Navigation) != StageState::Fresh) {
     return fail_queue(QStringLiteral("Navigation layers are missing or stale: run step 3 first."));
+  }
+  if (session_.navigation_uses_fixed_pipeline() || session_.fixed_pipeline_available()) {
+    // Fixed-chain layers are ordinary PGM/YAML, not agt_navigation_v3 assets.
+    // Save edits directly; rerunning the point-cloud chain would replace them.
+    const QString output = QDir(session_.work_dir()).filePath(
+        QStringLiteral("navigation_patched_%1").arg(stamp()));
+    std::string export_error;
+    if (!refinement_model_.export_navigation_map(output.toStdString(), &export_error) ||
+        !refinement_model_.write_navigation_patch(session_.navigation_patch_path().toStdString(), &export_error) ||
+        !refinement_model_.write_keepout_zones(QDir(output).filePath("keepout_zones.yaml").toStdString(), &export_error)) {
+      return fail_queue(QString::fromStdString(export_error));
+    }
+    session_.mark_done(WorkflowSession::Patch, output,
+        WorkflowSession::sha256_file(QDir(output).filePath("map.pgm")),
+        QStringLiteral("saved 2D edits on fixed pipeline map"));
+    saved_2d_fingerprint_ = QString::fromStdString(refinement_model_.active_fingerprint());
+    saved_2d_directory_ = output;
+    session_.set_editor_map_path(QDir(output).filePath("map.yaml"));
+    save_session_quietly();
+    refresh_workflow();
+    statusBar()->showMessage(QStringLiteral("2D edits saved: %1").arg(output), 15000);
+    continue_queue();
+    return;
   }
   QString missing;
   if (!tools_available({QStringLiteral("%1/patch_nav_map").arg(kConverterPackage)}, &missing)) {
@@ -1591,41 +1817,41 @@ void MainWindow::toggle_background(bool checked) { viewer_->set_dark_background(
 void MainWindow::toggle_height_coloring(bool checked) { viewer_->set_height_coloring(checked); }
 
 void MainWindow::show_controls() {
-  QMessageBox::information(
-      this, QStringLiteral("AGT Map Studio Controls"),
+  QMessageBox::information(this, QStringLiteral("AGT Map Studio Controls"),
       QStringLiteral(
-          "3D 视图\n"
-          "  左键拖动：旋转  右键拖动：平移  滚轮：缩放\n"
-          "  W/A/S/D/Q/E：移动相机（Shift 加速）  R：重置  0/1/2：等轴/前视/顶视\n"
-          "  N：Navigate  B：Select  X：Delete（模式键不再占用 S/D）\n"
-          "  工具：矩形拖选 / 多边形（单击加点，双击或 Enter 闭合，Esc 取消）/ 球体（单击）\n"
-          "  Z window：把矩形/多边形选择限制在高度带内；Ctrl+H：按高度带整体选择\n"
-          "  Delete：删除选中点（仅 Delete 模式）  Ctrl+I：反选  H：隐藏已删除  I：只看选中\n"
-          "  Ctrl+Z / Ctrl+Y：撤销 / 重做\n\n"
-          "2D 视图 (Ctrl+2)\n"
-          "  左键拖动平移（View 模式）  滚轮缩放  F：适配  R：重置\n"
-          "  Erase rect：拖框 占用->空闲   Obstacle line：拖线 空闲->占用\n"
-          "  Free/Occupied/Unknown polygon：单击加点，双击/Enter 闭合，Backspace 撤一点\n"
-          "  Forbidden zone：禁行多边形（导出 keepout_zones.yaml，不改栅格）\n\n"
-          "所有 3D 删除会写成 refinement.yaml 规则，所有 2D 栅格编辑会写成 patch_nav_map 的 polygon_m 补丁；\n"
-          "右侧 Publish Workflow 面板按 1→5 顺序执行并标记过期（STALE）的产物。"));
+          "3D view\n"
+          "  Left drag: rotate; right drag: pan; wheel: zoom\n"
+          "  W/A/S/D/Q/E: move camera (Shift: faster); R: reset; 0/1/2: isometric/front/top\n"
+          "  N: Navigate; B: Select; X: Delete\n"
+          "  Rectangle: drag; polygon: click vertices, double-click or Enter to close, Esc to cancel\n"
+          "  Sphere: click; Z window: limit rectangle/polygon selection by height\n"
+          "  Ctrl+H: select the height band; Delete: delete selected points in Delete mode\n"
+          "  Ctrl+I: invert selection; H: hide deleted points; I: show selected points only\n"
+          "  Ctrl+Z / Ctrl+Y: undo / redo\n\n"
+          "2D view (Ctrl+2)\n"
+          "  Left drag in View mode: pan; wheel: zoom; F: fit; R: reset\n"
+          "  Erase rect: drag to clear occupied cells; Obstacle line: drag to mark obstacles\n"
+          "  Free/Occupied/Unknown polygon: click vertices; double-click/Enter: close; Backspace: undo vertex\n"
+          "  Forbidden zone: export a keepout polygon without changing grid cells\n"
+          "  Ctrl+S: Save 2D Map; Ctrl+Shift+S: Save 2D Map As\n\n"
+          "3D deletions are recorded as refinement rules. 2D exports include the edited grid, "
+          "edit history and keepout zones. Publish Workflow marks outdated outputs as STALE."));
 }
 
 void MainWindow::show_workflow_help() {
-  QMessageBox::information(
-      this, QStringLiteral("Publish Workflow"),
+  QMessageBox::information(this, QStringLiteral("Publish Workflow"),
       QStringLiteral(
-          "1. 3D refinement   apply_map_refinement（建图包）或 studio 导出（裸 PCD）→ 二进制 map.pcd\n"
-          "2. Relocalization  build_relocalization_assets --map <有效PCD>\n"
-          "3. Navigation      pcd_to_nav_map + validate_nav_map（agt_navigation_v3 的正式转换器）\n"
-          "4. 2D patch        patch_nav_map <navigation> navigation_patch.yaml --output ...\n"
-          "5. Publish         create_map_package --map-root/--map-id/--map-version ...（可选 select_map_package 激活）\n\n"
-          "规则：\n"
-          "  • 源建图包永不被修改；所有产物写入 <源>_studio/ 工作目录并带时间戳。\n"
-          "  • 修改 3D 删除后，步骤 1-5 变为 STALE；修改 2D 编辑后，步骤 4-5 变为 STALE。\n"
-          "  • 发布目标 maps/<map_id>/<version> 已存在时拒绝发布（版本不可变）。\n"
-          "  • 工具日志追加到 <工作目录>/studio_tools.log；会话保存在 studio_session.yaml。\n"
-          "  • 需要先 source ROS 2 与工作区 overlay 再启动 Studio，才能找到上述 ros2 run 可执行文件。"));
+          "1. 3D refinement: apply deletion rules or export the edited cloud to map.pcd\n"
+          "2. Relocalization: build_relocalization_assets from the effective PCD\n"
+          "3. Navigation: run the fixed pipeline for a matching mapping package, "
+          "or use pcd_to_nav_map and validate_nav_map\n"
+          "4. 2D patch: save the edited grid, edit history and keepout zones\n"
+          "5. Publish: create_map_package with a map ID and version\n\n"
+          "Open and save standalone 2D maps using the File menu.\n"
+          "Changing 3D deletions makes dependent outputs STALE; changing 2D edits makes steps 4-5 STALE.\n"
+          "An existing published map version cannot be overwritten.\n"
+          "Tool logs: studio_tools.log in the work directory; session: studio_session.yaml.\n"
+          "Source ROS 2 and workspace overlays before launching Studio to locate external tools."));
 }
 
 void MainWindow::show_stats(const QString &text) { statusBar()->showMessage(text); }
@@ -1640,35 +1866,8 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     }
     cancel_tool();
   }
-  const bool unapplied = (session_.has_3d_edits() && session_.state(WorkflowSession::Refine) != StageState::Fresh) ||
-                         (session_.has_2d_edits() && session_.state(WorkflowSession::Patch) != StageState::Fresh);
-  if (unapplied) {
-    const auto answer = QMessageBox::question(
-        this, QStringLiteral("Unapplied edits"),
-        QStringLiteral("There are edits that were not applied/published. Export them (refinement.yaml / "
-                       "navigation_patch.yaml) before quitting?"),
-        QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
-    if (answer == QMessageBox::Cancel) {
-      event->ignore();
-      return;
-    }
-    if (answer == QMessageBox::Yes) {
-      QString error;
-      if (ensure_work_dir(&error)) {
-        if (selection_manager_.has_active_deletes()) {
-          selection_manager_.write_refinement_rules(session_.refinement_rules_path(), session_.source_pcd(), &error);
-        }
-        std::string patch_error;
-        if (refinement_model_.has_map()) {
-          refinement_model_.write_navigation_patch(session_.navigation_patch_path().toStdString(), &patch_error);
-          refinement_model_.write_keepout_zones(session_.keepout_zones_path().toStdString(), &patch_error);
-        }
-        session_.save(&error);
-      }
-    }
-  } else if (!session_.empty()) {
-    save_session_quietly();
-  }
+  if (!protect_unsaved_edits()) { event->ignore(); return; }
+  if (!session_.empty()) save_session_quietly();
   QMainWindow::closeEvent(event);
 }
 

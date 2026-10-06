@@ -3,6 +3,7 @@
 #include <Eigen/Core>
 
 #include <cstddef>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -15,6 +16,8 @@ struct LoadedPointCloud {
   pcl::PCLPointCloud2::Ptr source;
   std::vector<float> xyz;
   std::vector<float> intensity;
+  // Numeric single-value fields, aligned with xyz render points.
+  std::map<std::string, std::vector<float>> scalar_fields;
   // Renderable point i originated at this record in source->data. Keeping
   // this mapping lets the editor export every original PCL field losslessly.
   std::vector<std::size_t> source_indices;

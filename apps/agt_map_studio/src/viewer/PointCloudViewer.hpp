@@ -4,6 +4,7 @@
 #include "selection/SelectionBox.h"
 #include "selection/SelectionManager.h"
 #include "viewer/CameraController.hpp"
+#include "viewer/ScalarFieldColorMap.hpp"
 
 #include <QElapsedTimer>
 #include <QOpenGLBuffer>
@@ -43,6 +44,9 @@ public:
   void set_show_axis(bool enabled);
   void set_dark_background(bool enabled);
   void set_height_coloring(bool enabled);
+  bool set_scalar_coloring(const std::string &field_name,
+                           std::optional<float> minimum,
+                           std::optional<float> maximum, std::string *error);
   void adjust_point_size(float delta);
   void set_point_size(float size);
   void set_selection_manager(SelectionManager *manager);
@@ -73,6 +77,7 @@ public:
   std::size_t point_count() const { return cloud_.valid_point_count; }
   float fps() const { return fps_; }
   bool has_cloud() const { return cloud_.source != nullptr; }
+  const ScalarFieldColorRange &scalar_color_range() const { return scalar_color_range_; }
 
 signals:
   void stats_changed(const QString &text);
@@ -96,6 +101,7 @@ private slots:
 private:
   void upload_cloud();
   void upload_statuses();
+  void upload_scalar_colors();
   void draw_axes(const QMatrix4x4 &mvp);
   QString mode_text() const;
   QString tool_text() const;
@@ -109,6 +115,7 @@ private:
   CameraController camera_;
   QOpenGLBuffer cloud_buffer_;
   QOpenGLBuffer status_buffer_;
+  QOpenGLBuffer scalar_color_buffer_;
   QOpenGLBuffer axis_buffer_;
   std::unique_ptr<QOpenGLShaderProgram> shader_;
   QTimer timer_;
@@ -119,6 +126,10 @@ private:
   bool show_axis_ = true;
   bool dark_background_ = false;
   bool height_coloring_ = true;
+  bool scalar_coloring_ = false;
+  QString scalar_field_name_;
+  ScalarFieldColorRange scalar_color_range_;
+  std::vector<float> scalar_rgb_;
   bool gl_ready_ = false;
   bool left_drag_ = false;
   bool right_drag_ = false;

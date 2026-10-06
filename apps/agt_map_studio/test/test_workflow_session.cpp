@@ -2,6 +2,8 @@
 
 #include <QFile>
 #include <QTemporaryDir>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include <gtest/gtest.h>
 
@@ -106,6 +108,7 @@ TEST(WorkflowSessionTest, SaveAndLoadRoundTrip) {
   session.converter().resolution = 0.05;
   session.publish_target().map_id = "demo";
   session.publish_target().map_version = "v9";
+  session.set_editor_map_path(dir.filePath("edited/map.yaml"));
   const QString nav = dir.filePath("nav");
   QDir().mkpath(nav);
   session.mark_done(WorkflowSession::Navigation, nav, "pgm", "note");
@@ -117,8 +120,41 @@ TEST(WorkflowSessionTest, SaveAndLoadRoundTrip) {
   EXPECT_EQ(restored.source_pcd(), pcd);
   EXPECT_DOUBLE_EQ(restored.converter().resolution, 0.05);
   EXPECT_EQ(restored.publish_target().map_id, "demo");
+  EXPECT_EQ(restored.editor_map_path(), dir.filePath("edited/map.yaml"));
   EXPECT_EQ(restored.record(WorkflowSession::Navigation).path, nav);
   EXPECT_EQ(restored.state(WorkflowSession::Navigation), StageState::Fresh);
+}
+
+TEST(WorkflowSessionTest, FixedNavigationIgnoresUnusedParametersButDetectsChangedRaster) {
+  QTemporaryDir dir;
+  const QString pcd = write_file(dir, "map.pcd", "source");
+  const QString nav = dir.filePath("navigation");
+  QDir().mkpath(nav);
+  const QString pgm = write_file(dir, "navigation/map.pgm", "original-raster");
+  const QJsonObject report{{"status", "complete"}, {"algorithms", QJsonObject{{"octomap", 1}}},
+      {"implementation_sha256", QJsonObject{{"run_pipeline.py", "version"}}},
+      {"outputs", QJsonObject{{"map_yaml", nav + "/map.yaml"}}}};
+  write_file(dir, "report.json", QJsonDocument(report).toJson());
+  WorkflowSession session;
+  session.reset(pcd, QString());
+  session.mark_done(WorkflowSession::Navigation, nav, WorkflowSession::sha256_file(pgm));
+  session.converter().resolution = .11;
+  session.converter().max_step = 2.;
+  session.set_patch_fingerprint("edited-polygon");
+  EXPECT_EQ(session.state(WorkflowSession::Navigation), StageState::Fresh);
+  session.mark_done(WorkflowSession::Patch, nav, "patched");
+  EXPECT_EQ(session.state(WorkflowSession::Patch), StageState::Fresh);
+  write_file(dir, "navigation/map.pgm", "externally-changed-raster");
+  EXPECT_EQ(session.state(WorkflowSession::Navigation), StageState::Stale);
+}
+
+TEST(WorkflowSessionTest, GenericNavigationStillUsesConverterParameters) {
+  QTemporaryDir dir;
+  WorkflowSession session;
+  session.reset(write_file(dir, "map.pcd", "source"), QString());
+  session.mark_done(WorkflowSession::Navigation, dir.path(), "pgm");
+  session.converter().resolution = .11;
+  EXPECT_EQ(session.state(WorkflowSession::Navigation), StageState::Stale);
 }
 
 }  // namespace agt_map_studio

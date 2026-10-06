@@ -6,3 +6,6 @@ __pycache__/
 build/
 install/
 log/
+.studio-build/
+.studio-install/
+.studio-log/

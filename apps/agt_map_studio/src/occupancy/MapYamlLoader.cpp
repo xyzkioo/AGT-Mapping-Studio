@@ -3,6 +3,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -130,6 +131,10 @@ bool MapYamlLoader::load(const std::string &yaml_path, GridMap *map,
     metadata->free_thresh = root["free_thresh"].as<double>(0.196);
     metadata->negate = root["negate"].as<int>(0) != 0;
     metadata->mode = root["mode"].as<std::string>("trinary");
+    if (metadata->mode != "trinary" || (origin.size() > 2U && std::abs(origin[2].as<double>()) > 1e-9)) {
+      if (error) *error = "only trinary maps with zero origin yaw are supported; map was not changed";
+      return false;
+    }
     if (!(resolution > 0.0F) || metadata->occupied_thresh < 0.0 ||
         metadata->occupied_thresh > 1.0 || metadata->free_thresh < 0.0 ||
         metadata->free_thresh > 1.0 ||

@@ -117,6 +117,7 @@ bool PCDLoader::load(const std::string &path, LoadedPointCloud *result,
   result->source.reset();
   result->xyz.clear();
   result->intensity.clear();
+  result->scalar_fields.clear();
   result->source_indices.clear();
   result->valid_point_count = 0;
 
@@ -146,6 +147,17 @@ bool PCDLoader::load(const std::string &path, LoadedPointCloud *result,
     return false;
   }
 
+  std::vector<const pcl::PCLPointField *> scalar_fields;
+  for (const auto &field : cloud->fields) {
+    const std::uint32_t size = datatype_size(field.datatype);
+    if (field.name == "x" || field.name == "y" || field.name == "z" ||
+        field.count != 1 || size == 0 || field.offset + size > point_step) {
+      continue;
+    }
+    scalar_fields.push_back(&field);
+    result->scalar_fields[field.name].reserve(point_count);
+  }
+
   result->source = cloud;
   result->has_intensity = intensity_field != nullptr;
   result->xyz.reserve(point_count * 3U);
@@ -164,6 +176,7 @@ bool PCDLoader::load(const std::string &path, LoadedPointCloud *result,
         result->source.reset();
         result->xyz.clear();
         result->intensity.clear();
+        result->scalar_fields.clear();
         result->source_indices.clear();
         return false;
       }
@@ -192,6 +205,12 @@ bool PCDLoader::load(const std::string &path, LoadedPointCloud *result,
         }
         result->intensity.push_back(intensity);
       }
+      for (const auto *field : scalar_fields) {
+        float value = std::numeric_limits<float>::quiet_NaN();
+        read_numeric(base + field->offset, field->datatype,
+                     datatype_size(field->datatype), &value);
+        result->scalar_fields[field->name].push_back(value);
+      }
       const Eigen::Vector3f point(x, y, z);
       result->min_bound = result->min_bound.cwiseMin(point);
       result->max_bound = result->max_bound.cwiseMax(point);
@@ -202,6 +221,7 @@ bool PCDLoader::load(const std::string &path, LoadedPointCloud *result,
   if (result->valid_point_count == 0) {
     if (error) *error = "PCD contains no finite XYZ points";
     result->source.reset();
+    result->scalar_fields.clear();
     return false;
   }
   return true;

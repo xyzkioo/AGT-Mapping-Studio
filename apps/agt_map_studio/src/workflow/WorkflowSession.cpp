@@ -5,6 +5,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include <yaml-cpp/yaml.h>
 
@@ -53,6 +55,7 @@ void WorkflowSession::reset(const QString &source_pcd, const QString &source_pac
   refinement_fingerprint_.clear();
   patch_fingerprint_.clear();
   records_.clear();
+  editor_map_path_.clear();
   if (work_dir_.isEmpty() && !source_pcd.isEmpty()) {
     work_dir_ = QDir(QFileInfo(source_pcd).absolutePath()).filePath(QStringLiteral("studio_work"));
   }
@@ -110,9 +113,38 @@ StageState WorkflowSession::state(Stage stage) const {
   const auto found = records_.find(static_cast<int>(stage));
   if (found == records_.end() || found->second.path.isEmpty()) return StageState::Missing;
   if (!QFileInfo::exists(found->second.path)) return StageState::Missing;
+  if (stage == Navigation && navigation_uses_fixed_pipeline()) {
+    // Older fixed-pipeline sessions mistakenly included unused converter settings.
+    // Ignore those settings, but still reject a different source or changed raster.
+    const auto &r = found->second;
+    return r.input_fingerprint.section('|', 0, 0) == effective_pcd_sha256() &&
+                   r.output_sha256 == sha256_file(QDir(r.path).filePath("map.pgm"))
+               ? StageState::Fresh : StageState::Stale;
+  }
   return found->second.input_fingerprint == expected_input_fingerprint(stage)
              ? StageState::Fresh
              : StageState::Stale;
+}
+
+bool WorkflowSession::fixed_pipeline_available() const {
+  if (empty() || has_3d_edits()) return false;
+  const QString package = source_package_dir_.isEmpty()
+      ? QFileInfo(source_pcd_).absolutePath() : source_package_dir_;
+  return QFileInfo::exists(QDir(package).filePath("poses_timed.txt")) &&
+         QFileInfo(QDir(package).filePath("patches")).isDir();
+}
+
+bool WorkflowSession::navigation_uses_fixed_pipeline() const {
+  const QString nav = record(Navigation).path;
+  if (nav.isEmpty()) return false;
+  QFile report(QDir(nav).filePath("../report.json"));
+  if (!report.open(QIODevice::ReadOnly)) return false;
+  const auto data = QJsonDocument::fromJson(report.readAll()).object();
+  const QString reported = data.value("outputs").toObject().value("map_yaml").toString();
+  return data.value("status").toString() == "complete" &&
+         data.value("algorithms").isObject() &&
+         !data.value("implementation_sha256").toObject().value("run_pipeline.py").toString().isEmpty() &&
+         QDir::cleanPath(reported) == QDir::cleanPath(QDir(nav).filePath("map.yaml"));
 }
 
 const StageRecord &WorkflowSession::record(Stage stage) const {
@@ -220,6 +252,7 @@ bool WorkflowSession::save(QString *error) const {
     out << YAML::Key << "schema_version" << YAML::Value << 1;
     out << YAML::Key << "generator" << YAML::Value << "agt_map_studio";
     out << YAML::Key << "saved_at" << YAML::Value << now_iso8601().toStdString();
+    out << YAML::Key << "editor_map_yaml" << YAML::Value << editor_map_path_.toStdString();
     out << YAML::Key << "source" << YAML::Value << YAML::BeginMap
         << YAML::Key << "pcd" << YAML::Value << source_pcd_.toStdString()
         << YAML::Key << "package_dir" << YAML::Value << source_package_dir_.toStdString()
@@ -281,6 +314,7 @@ bool WorkflowSession::load(const QString &session_file, QString *error) {
       return false;
     }
     work_dir_ = QFileInfo(session_file).absolutePath();
+    editor_map_path_ = QString::fromStdString(root["editor_map_yaml"].as<std::string>(""));
     const YAML::Node source = root["source"];
     source_pcd_ = QString::fromStdString(source["pcd"].as<std::string>(""));
     source_package_dir_ = QString::fromStdString(source["package_dir"].as<std::string>(""));

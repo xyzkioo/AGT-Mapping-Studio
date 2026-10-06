@@ -14,6 +14,7 @@ class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
 class QSpinBox;
+class QGroupBox;
 
 namespace agt_map_studio {
 
@@ -59,6 +60,7 @@ private:
 
   std::array<StepRow, 5> steps_{};
   QLabel *source_label_ = nullptr;
+  QGroupBox *converter_box_ = nullptr;
   QDoubleSpinBox *resolution_ = nullptr;
   QDoubleSpinBox *margin_ = nullptr;
   QSpinBox *min_points_ = nullptr;

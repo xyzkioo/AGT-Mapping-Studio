@@ -9,6 +9,8 @@
 #include <QMessageBox>
 
 #include <exception>
+#include <cmath>
+#include <optional>
 
 int main(int argc, char **argv) {
   QApplication application(argc, argv);
@@ -24,6 +26,18 @@ int main(int argc, char **argv) {
       {QStringLiteral("p"), QStringLiteral("pcd")},
       QStringLiteral("Open a PCD file on startup."), QStringLiteral("path"));
   parser.addOption(pcd_option);
+  const QCommandLineOption color_field_option(
+      QStringLiteral("color-field"), QStringLiteral("Color points by a numeric PCD field."),
+      QStringLiteral("name"));
+  parser.addOption(color_field_option);
+  const QCommandLineOption color_min_option(
+      QStringLiteral("color-min"), QStringLiteral("Minimum value for scalar coloring."),
+      QStringLiteral("value"));
+  parser.addOption(color_min_option);
+  const QCommandLineOption color_max_option(
+      QStringLiteral("color-max"), QStringLiteral("Maximum value for scalar coloring."),
+      QStringLiteral("value"));
+  parser.addOption(color_max_option);
   const QCommandLineOption map_option(
       {QStringLiteral("m"), QStringLiteral("map")},
       QStringLiteral("Open a Nav2 map.yaml on startup."), QStringLiteral("path"));
@@ -94,6 +108,29 @@ int main(int argc, char **argv) {
     if (!window.open_pcd(QFileInfo(pcd_path).absoluteFilePath(), &error)) {
       window.show();
       QMessageBox::critical(&window, QStringLiteral("Open PCD failed"), error);
+    } else {
+      const QString field = parser.value(color_field_option);
+      const QString minimum_text = parser.value(color_min_option);
+      const QString maximum_text = parser.value(color_max_option);
+      if (!field.isEmpty() || !minimum_text.isEmpty() || !maximum_text.isEmpty()) {
+        std::optional<float> minimum;
+        std::optional<float> maximum;
+        bool minimum_ok = true;
+        bool maximum_ok = true;
+        if (!minimum_text.isEmpty()) minimum = minimum_text.toFloat(&minimum_ok);
+        if (!maximum_text.isEmpty()) maximum = maximum_text.toFloat(&maximum_ok);
+        if (field.isEmpty() || !minimum_ok || !maximum_ok ||
+            (minimum && !std::isfinite(*minimum)) ||
+            (maximum && !std::isfinite(*maximum))) {
+          window.show();
+          QMessageBox::critical(
+              &window, QStringLiteral("Invalid scalar color options"),
+              QStringLiteral("Use --color-field NAME and optional finite --color-min / --color-max values."));
+        } else if (!window.set_scalar_color_field(field, minimum, maximum, &error)) {
+          window.show();
+          QMessageBox::critical(&window, QStringLiteral("Scalar field failed"), error);
+        }
+      }
     }
   }
   const QString package_path = parser.value(package_option);

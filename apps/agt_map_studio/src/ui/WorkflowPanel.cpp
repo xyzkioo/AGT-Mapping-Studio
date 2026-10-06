@@ -1,4 +1,5 @@
 #include "ui/WorkflowPanel.hpp"
+#include "tools/ExternalToolRunner.hpp"
 
 #include <QCheckBox>
 #include <QDoubleSpinBox>
@@ -13,6 +14,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSpinBox>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 namespace agt_map_studio {
@@ -54,6 +56,7 @@ WorkflowPanel::WorkflowPanel(QWidget *parent) : QWidget(parent) {
   for (auto &row : steps_) layout->addWidget(row.title->parentWidget());
 
   auto *converter_box = new QGroupBox(QStringLiteral("Converter parameters (pcd_to_nav_map)"), host);
+  converter_box_ = converter_box;
   auto *form = new QFormLayout(converter_box);
   resolution_ = new QDoubleSpinBox(converter_box);
   resolution_->setRange(0.02, 1.0);
@@ -195,8 +198,24 @@ void WorkflowPanel::paint_badge(QLabel *badge, StageState state, bool applicable
 }
 
 void WorkflowPanel::refresh(const WorkflowSession &session, bool tool_running) {
+  const bool fixed = session.fixed_pipeline_available();
+  if (fixed) {
+    ConverterParameters actual;
+    // Fixed chain exports geometry_occupancy, not the historical-route draft.
+    actual.use_trajectory = false;
+    set_converter(actual);
+  }
+  converter_box_->setEnabled(!fixed && !tool_running);
+  converter_box_->setTitle(fixed ? QStringLiteral("Pipeline parameters (Fixed)")
+                                 : QStringLiteral("Converter parameters (pcd_to_nav_map)"));
+  converter_box_->setToolTip(fixed
+      ? QStringLiteral("Shows the actual pipeline parameters. Generic converter settings do not apply. Trajectory data does not directly clear obstacles.")
+      : QString());
+  steps_[2].detail->setText(fixed
+      ? QStringLiteral("CenterPoint + vehicle body filter + isolated point filter + OctoMap (fixed configuration)")
+      : QStringLiteral("pcd_to_nav_map + validate_nav_map (agt_navigation_v3)."));
   if (session.empty()) {
-    source_label_->setText(QStringLiteral("No source loaded. Open a PCD or a mapping package."));
+    source_label_->setText(QStringLiteral("No point cloud loaded. Open a 2D map and save it using File > Save 2D Map."));
   } else {
     source_label_->setText(QStringLiteral("Source: %1%2\nWork dir: %3")
                                .arg(session.source_pcd(),
@@ -238,7 +257,26 @@ void WorkflowPanel::refresh(const WorkflowSession &session, bool tool_running) {
                                 ? QStringLiteral("Ready to publish.")
                                 : QStringLiteral("Blocked: %1").arg(reasons.join(QStringLiteral("; "))));
   steps_[4].run->setEnabled(!tool_running && reasons.isEmpty());
+  const bool reloc_available = ExternalToolRunner::ros2_executable_available(
+      QStringLiteral("agt_global_relocalization_native"), QStringLiteral("build_relocalization_assets"));
+  const bool convert_available = fixed ||
+      (ExternalToolRunner::ros2_executable_available(QStringLiteral("agt_map_converter"), QStringLiteral("pcd_to_nav_map")) &&
+       ExternalToolRunner::ros2_executable_available(QStringLiteral("agt_map_converter"), QStringLiteral("validate_nav_map")));
+  const bool patch_available = fixed || session.navigation_uses_fixed_pipeline() ||
+      ExternalToolRunner::ros2_executable_available(QStringLiteral("agt_map_converter"), QStringLiteral("patch_nav_map"));
+  const bool publish_available = ExternalToolRunner::ros2_executable_available(
+      QStringLiteral("agt_map_manager"), QStringLiteral("create_map_package"));
+  for (const auto &item : {std::pair<int,bool>{1,reloc_available}, {2,convert_available},
+                           {3,patch_available}, {4,publish_available}}) {
+    if (item.second) continue;
+    steps_[item.first].run->setEnabled(false);
+    steps_[item.first].detail->setText(QStringLiteral("Required external tool is not installed."));
+  }
   run_all_->setEnabled(!tool_running && !session.empty());
+  if (!reloc_available && session.state(WorkflowSession::Relocalization) != StageState::Fresh) {
+    run_all_->setEnabled(false);
+    run_all_->setToolTip(QStringLiteral("Relocalization tool is not installed. Run available steps individually."));
+  } else run_all_->setToolTip(QString());
   cancel_->setEnabled(tool_running);
 }
 
@@ -266,6 +304,10 @@ void WorkflowPanel::read_converter(ConverterParameters *parameters) const {
 }
 
 void WorkflowPanel::set_converter(const ConverterParameters &parameters) {
+  // Block every child: otherwise setValue emits parameters_changed while only
+  // some fields have been restored, overwriting the caller's session settings.
+  const QSignalBlocker b1(resolution_), b2(margin_), b3(min_points_),
+      b4(max_step_), b5(max_slope_), b6(use_trajectory_);
   resolution_->setValue(parameters.resolution);
   margin_->setValue(parameters.margin);
   min_points_->setValue(parameters.min_points);
@@ -282,6 +324,7 @@ void WorkflowPanel::read_publish_target(PublishTarget *target) const {
 }
 
 void WorkflowPanel::set_publish_target(const PublishTarget &target) {
+  const QSignalBlocker b1(map_root_), b2(map_id_), b3(map_version_), b4(activate_);
   map_root_->setText(target.map_root);
   map_id_->setText(target.map_id);
   map_version_->setText(target.map_version);

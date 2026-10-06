@@ -74,6 +74,8 @@ public:
   QString keepout_zones_path() const;
   QString pipeline_config_path() const;
   QString hmi_edit_metadata_path() const;
+  const QString &editor_map_path() const { return editor_map_path_; }
+  void set_editor_map_path(const QString &path) { editor_map_path_ = path; }
 
   // Fingerprints of the current in-memory edits; owned by the caller.
   void set_refinement_fingerprint(const QString &value) { refinement_fingerprint_ = value; }
@@ -100,6 +102,8 @@ public:
   QString effective_pcd() const;
   QString effective_pcd_sha256() const;
   QString effective_poses_path() const;
+  bool fixed_pipeline_available() const;
+  bool navigation_uses_fixed_pipeline() const;
   // The navigation directory the publish step must package.
   QString effective_navigation_dir() const;
 
@@ -114,6 +118,7 @@ private:
   QString source_package_dir_;
   QString source_pcd_sha256_;
   QString work_dir_;
+  QString editor_map_path_;
   QString refinement_fingerprint_;
   QString patch_fingerprint_;
   ConverterParameters converter_;

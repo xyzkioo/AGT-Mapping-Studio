@@ -1,4 +1,8 @@
 #include "occupancy/RefinementModel.hpp"
+#include "occupancy/commands/DrawObstacleCommand.hpp"
+#include "occupancy/commands/EraseRectangleCommand.hpp"
+#include "occupancy/commands/ForbiddenPolygonCommand.hpp"
+#include "occupancy/commands/FillPolygonCommand.hpp"
 
 #include <yaml-cpp/yaml.h>
 
@@ -7,6 +11,7 @@
 
 #include <chrono>
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
@@ -150,6 +155,11 @@ bool RefinementModel::save_refinement_yaml(const std::string &path,
     emitter << YAML::BeginMap << YAML::Key << "version" << YAML::Value << 1
             << YAML::Key << "base_map" << YAML::Value << YAML::BeginMap
             << YAML::Key << "yaml" << YAML::Value << base_map_.yaml_path()
+            << YAML::Key << "width" << YAML::Value << base_map_.width()
+            << YAML::Key << "height" << YAML::Value << base_map_.height()
+            << YAML::Key << "resolution" << YAML::Value << base_map_.resolution()
+            << YAML::Key << "origin" << YAML::Value << YAML::Flow << YAML::BeginSeq
+            << base_map_.origin_x() << base_map_.origin_y() << YAML::EndSeq
             << YAML::EndMap << YAML::Key << "operations" << YAML::Value
             << YAML::BeginSeq;
     for (const auto &entry : history_) {
@@ -189,6 +199,10 @@ bool RefinementModel::save_refinement_yaml(const std::string &path,
       }
       emitter << YAML::EndSeq << YAML::EndMap;
     }
+    emitter << YAML::EndSeq << YAML::Key << "undo_ids" << YAML::Value << YAML::BeginSeq;
+    for (const auto &command : undo_stack_) emitter << command->operation().id;
+    emitter << YAML::EndSeq << YAML::Key << "redo_ids" << YAML::Value << YAML::BeginSeq;
+    for (const auto &command : redo_stack_) emitter << command->operation().id;
     emitter << YAML::EndSeq << YAML::EndMap;
     std::ofstream stream(file_path);
     if (!stream) {
@@ -216,6 +230,16 @@ bool RefinementModel::load_refinement_yaml(const std::string &path,
   try {
     const YAML::Node root = YAML::LoadFile(path);
     const YAML::Node operations = root["operations"];
+    const auto base = root["base_map"];
+    if (base && base["width"] &&
+        (base["width"].as<unsigned>() != base_map_.width() ||
+         base["height"].as<unsigned>() != base_map_.height() ||
+         std::abs(base["resolution"].as<double>()-base_map_.resolution()) > 1e-6 ||
+         std::abs(base["origin"][0].as<double>()-base_map_.origin_x()) > 1e-6 ||
+         std::abs(base["origin"][1].as<double>()-base_map_.origin_y()) > 1e-6)) {
+      if (error) *error = "refinement geometry differs from the loaded map";
+      return false;
+    }
     if (!operations || !operations.IsSequence()) {
       if (error) *error = "refinement operations must be a sequence";
       return false;
@@ -251,6 +275,8 @@ bool RefinementModel::load_refinement_yaml(const std::string &path,
       }
       for (const auto &change : node["changes"]) {
         const auto pixel = change["pixel"];
+        if (pixel[0].as<unsigned>() >= base_map_.width() || pixel[1].as<unsigned>() >= base_map_.height())
+          throw std::runtime_error("refinement pixel is outside the map");
         const std::size_t index = static_cast<std::size_t>(pixel[1].as<std::uint32_t>()) *
                                   base_map_.width() + pixel[0].as<std::uint32_t>();
         operation.changes.push_back(
@@ -266,6 +292,23 @@ bool RefinementModel::load_refinement_yaml(const std::string &path,
       history_.push_back(operation);
       next_operation_id_ = std::max(next_operation_id_, operation.id + 1U);
     }
+    const auto command_for = [this](std::size_t id) -> std::unique_ptr<GridCommand> {
+      for (const auto &op : history_) {
+        if (op.id != id) continue;
+        if (op.type == "erase_rectangle") return std::make_unique<EraseRectangleCommand>(op);
+        if (op.type == "draw_obstacle") return std::make_unique<DrawObstacleCommand>(op);
+        if (op.type == "forbidden_polygon") return std::make_unique<ForbiddenPolygonCommand>(op);
+        if (op.type == "fill_free_polygon" || op.type == "fill_occupied_polygon" || op.type == "fill_unknown_polygon")
+          return std::make_unique<FillPolygonCommand>(op);
+      }
+      throw std::runtime_error("unknown operation in saved undo/redo stack");
+    };
+    if (root["undo_ids"]) {
+      for (const auto &id : root["undo_ids"]) undo_stack_.push_back(command_for(id.as<std::size_t>()));
+      for (const auto &id : root["redo_ids"]) redo_stack_.push_back(command_for(id.as<std::size_t>()));
+    } else {
+      for (const auto &op : history_) if (!op.undone) undo_stack_.push_back(command_for(op.id));
+    }
   } catch (const std::exception &exception) {
     if (error) *error = exception.what();
     return false;
@@ -275,6 +318,40 @@ bool RefinementModel::load_refinement_yaml(const std::string &path,
 
 bool RefinementModel::export_navigation_map(const std::string &output_dir,
                                             std::string *error) const {
+  namespace fs = std::filesystem;
+  static std::atomic<unsigned long> sequence{0};
+  fs::path staging, backup;
+  bool moved_old = false;
+  try {
+    const fs::path output = fs::absolute(output_dir).lexically_normal();
+    if (output == output.root_path()) throw std::runtime_error("invalid map output directory");
+    const auto suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                        "_" + std::to_string(++sequence);
+    staging = output.parent_path()/(output.filename().string()+".tmp_"+suffix);
+    backup = output.parent_path()/(output.filename().string()+".backup_"+suffix);
+    fs::create_directories(output.parent_path());
+    if (fs::exists(output)) {
+      if (!fs::is_directory(output) || fs::is_symlink(output)) throw std::runtime_error("map output must be a real directory");
+      fs::copy(output, staging, fs::copy_options::recursive);
+    } else fs::create_directory(staging);
+    if (!write_navigation_files(staging.string(), error) || !write_keepout_zones((staging/"keepout_zones.yaml").string(), error)) {
+      fs::remove_all(staging);
+      return false;
+    }
+    if (fs::exists(output)) { fs::rename(output, backup); moved_old = true; }
+    try { fs::rename(staging, output); }
+    catch (...) { if (moved_old) fs::rename(backup, output); throw; }
+    if (moved_old) { std::error_code ignored; fs::remove_all(backup, ignored); }
+    return true;
+  } catch (const std::exception &exception) {
+    if (!staging.empty()) { std::error_code ignored; fs::remove_all(staging, ignored); }
+    if (error) *error = exception.what();
+    return false;
+  }
+}
+
+bool RefinementModel::write_navigation_files(const std::string &output_dir,
+                                             std::string *error) const {
   if (!has_map()) {
     if (error) *error = "no base occupancy map loaded";
     return false;
@@ -348,6 +425,10 @@ std::string RefinementModel::active_fingerprint() const {
     if (entry.undone) continue;
     stream << entry.id << ':' << entry.type << ':' << entry.changes.size() << ':'
            << entry.geometry.size() << ':' << entry.width_m << ';';
+    stream << std::setprecision(17);
+    for (const auto &point : entry.geometry) stream << point.x << ',' << point.y << ';';
+    for (const auto &change : entry.changes)
+      stream << change.index << ':' << static_cast<int>(change.before) << ':' << static_cast<int>(change.after) << ';';
   }
   std::ostringstream hex;
   hex << std::hex << std::hash<std::string>{}(stream.str());

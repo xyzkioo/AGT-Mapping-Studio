@@ -23,6 +23,7 @@ namespace agt_map_studio {
 PointCloudViewer::PointCloudViewer(QWidget *parent)
     : QOpenGLWidget(parent), cloud_buffer_(QOpenGLBuffer::VertexBuffer),
       status_buffer_(QOpenGLBuffer::VertexBuffer),
+      scalar_color_buffer_(QOpenGLBuffer::VertexBuffer),
       axis_buffer_(QOpenGLBuffer::VertexBuffer) {
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking(true);
@@ -35,6 +36,7 @@ PointCloudViewer::~PointCloudViewer() {
     makeCurrent();
     cloud_buffer_.destroy();
     status_buffer_.destroy();
+    scalar_color_buffer_.destroy();
     axis_buffer_.destroy();
     doneCurrent();
   }
@@ -44,6 +46,10 @@ void PointCloudViewer::set_cloud(LoadedPointCloud cloud,
                                  const QString &filename) {
   cloud_ = std::move(cloud);
   filename_ = filename;
+  scalar_coloring_ = false;
+  scalar_field_name_.clear();
+  scalar_rgb_.clear();
+  height_coloring_ = true;
   status_buffer_dirty_ = true;
   if (has_cloud()) {
     reset_camera();
@@ -74,7 +80,39 @@ void PointCloudViewer::set_dark_background(bool enabled) {
 
 void PointCloudViewer::set_height_coloring(bool enabled) {
   height_coloring_ = enabled;
+  if (enabled) scalar_coloring_ = false;
   update();
+}
+
+bool PointCloudViewer::set_scalar_coloring(
+    const std::string &field_name, std::optional<float> minimum,
+    std::optional<float> maximum, std::string *error) {
+  const auto field = cloud_.scalar_fields.find(field_name);
+  if (field == cloud_.scalar_fields.end()) {
+    if (error) *error = "PCD has no scalar field named " + field_name;
+    return false;
+  }
+  ScalarFieldColorRange range;
+  if (!ScalarFieldColorMap::resolve_range(field->second, minimum, maximum,
+                                          &range, error)) {
+    return false;
+  }
+  std::vector<float> rgb;
+  if (!ScalarFieldColorMap::map_to_rgb(field->second, range, &rgb, error)) {
+    return false;
+  }
+  scalar_field_name_ = QString::fromStdString(field_name);
+  scalar_color_range_ = range;
+  scalar_rgb_ = std::move(rgb);
+  scalar_coloring_ = true;
+  height_coloring_ = false;
+  if (gl_ready_) {
+    makeCurrent();
+    upload_scalar_colors();
+    doneCurrent();
+  }
+  update();
+  return true;
 }
 
 void PointCloudViewer::set_point_size(float size) {
@@ -242,24 +280,29 @@ void PointCloudViewer::initializeGL() {
   const char *vertex_shader = R"glsl(
     attribute vec3 a_position;
     attribute float a_status;
+    attribute vec3 a_scalar_color;
     uniform mat4 u_mvp;
     uniform float u_point_size;
     varying float v_height;
     varying float v_status;
+    varying vec3 v_scalar_color;
     void main() {
       gl_Position = u_mvp * vec4(a_position, 1.0);
       gl_PointSize = u_point_size;
       v_height = a_position.z;
       v_status = a_status;
+      v_scalar_color = a_scalar_color;
     }
   )glsl";
   const char *fragment_shader = R"glsl(
     uniform vec4 u_color;
     uniform int u_height_coloring;
+    uniform int u_scalar_coloring;
     uniform float u_z_min;
     uniform float u_z_max;
     varying float v_height;
     varying float v_status;
+    varying vec3 v_scalar_color;
 
     vec3 height_color(float value) {
       float range = max(u_z_max - u_z_min, 0.000001);
@@ -278,9 +321,11 @@ void PointCloudViewer::initializeGL() {
       } else if (v_status > 0.5) {
         gl_FragColor = vec4(1.0, 0.75, 0.05, 1.0);
       } else {
-        gl_FragColor = u_height_coloring == 1
-            ? vec4(height_color(v_height), 1.0)
-            : u_color;
+        gl_FragColor = u_scalar_coloring == 1
+            ? vec4(v_scalar_color, 1.0)
+            : (u_height_coloring == 1
+                   ? vec4(height_color(v_height), 1.0)
+                   : u_color);
       }
     }
   )glsl";
@@ -294,6 +339,7 @@ void PointCloudViewer::initializeGL() {
 
   cloud_buffer_.create();
   status_buffer_.create();
+  scalar_color_buffer_.create();
   axis_buffer_.create();
   const float axis[] = {
       0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
@@ -306,6 +352,7 @@ void PointCloudViewer::initializeGL() {
   gl_ready_ = true;
   upload_cloud();
   upload_statuses();
+  upload_scalar_colors();
 }
 
 void PointCloudViewer::resizeGL(int width, int height) {
@@ -326,6 +373,7 @@ void PointCloudViewer::paintGL() {
     shader_->setUniformValue("u_mvp", mvp);
     shader_->setUniformValue("u_point_size", point_size_);
     shader_->setUniformValue("u_height_coloring", height_coloring_ ? 1 : 0);
+    shader_->setUniformValue("u_scalar_coloring", scalar_coloring_ ? 1 : 0);
     shader_->setUniformValue("u_z_min", cloud_.min_bound.z());
     shader_->setUniformValue("u_z_max", cloud_.max_bound.z());
     shader_->setUniformValue(
@@ -341,10 +389,17 @@ void PointCloudViewer::paintGL() {
       shader_->enableAttributeArray("a_status");
       shader_->setAttributeBuffer("a_status", GL_FLOAT, 0, 1);
       status_buffer_.release();
+      if (scalar_coloring_) {
+        scalar_color_buffer_.bind();
+        shader_->enableAttributeArray("a_scalar_color");
+        shader_->setAttributeBuffer("a_scalar_color", GL_FLOAT, 0, 3);
+        scalar_color_buffer_.release();
+      }
       cloud_buffer_.bind();
       glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(cloud_.point_count()));
       shader_->disableAttributeArray("a_position");
       shader_->disableAttributeArray("a_status");
+      if (scalar_coloring_) shader_->disableAttributeArray("a_scalar_color");
       cloud_buffer_.release();
     }
     if (show_axis_ && axis_buffer_.isCreated()) {
@@ -392,7 +447,7 @@ void PointCloudViewer::paintGL() {
     painter.drawText(last_mouse_position_ + QPoint(16, 4),
                      QStringLiteral("click: sphere r=%1 m").arg(sphere_radius_, 0, 'f', 2));
   }
-  if (height_coloring_ && has_cloud()) {
+  if ((height_coloring_ || scalar_coloring_) && has_cloud()) {
     const int legend_width = 180;
     const int legend_height = 12;
     const int legend_x = std::max(12, width() - legend_width - 18);
@@ -406,10 +461,18 @@ void PointCloudViewer::paintGL() {
     gradient.setColorAt(1.0, QColor(220, 35, 35));
     painter.fillRect(legend_x, legend_y, legend_width, legend_height, gradient);
     painter.drawRect(legend_x, legend_y, legend_width, legend_height);
-    painter.drawText(legend_x, legend_y + 30,
-                     QStringLiteral("Z low: %1").arg(cloud_.min_bound.z(), 0, 'f', 2));
-    painter.drawText(legend_x + 105, legend_y + 30,
-                     QStringLiteral("high: %1").arg(cloud_.max_bound.z(), 0, 'f', 2));
+    if (scalar_coloring_) {
+      painter.drawText(legend_x, legend_y + 30,
+                       QStringLiteral("%1: %2").arg(scalar_field_name_)
+                           .arg(scalar_color_range_.minimum, 0, 'g', 4));
+      painter.drawText(legend_x + 105, legend_y + 30,
+                       QStringLiteral("%1").arg(scalar_color_range_.maximum, 0, 'g', 4));
+    } else {
+      painter.drawText(legend_x, legend_y + 30,
+                       QStringLiteral("Z low: %1").arg(cloud_.min_bound.z(), 0, 'f', 2));
+      painter.drawText(legend_x + 105, legend_y + 30,
+                       QStringLiteral("high: %1").arg(cloud_.max_bound.z(), 0, 'f', 2));
+    }
   }
   painter.end();
 }
@@ -418,6 +481,7 @@ void PointCloudViewer::draw_axes(const QMatrix4x4 &mvp) {
   shader_->setUniformValue("u_mvp", mvp);
   shader_->setUniformValue("u_point_size", 1.0F);
   shader_->setUniformValue("u_height_coloring", 0);
+  shader_->setUniformValue("u_scalar_coloring", 0);
   axis_buffer_.bind();
   shader_->enableAttributeArray("a_position");
   shader_->setAttributeBuffer("a_position", GL_FLOAT, 0, 3);
@@ -438,6 +502,15 @@ void PointCloudViewer::upload_cloud() {
   cloud_buffer_.allocate(cloud_.xyz.data(),
                          static_cast<int>(cloud_.xyz.size() * sizeof(float)));
   cloud_buffer_.release();
+}
+
+void PointCloudViewer::upload_scalar_colors() {
+  if (!gl_ready_ || !scalar_color_buffer_.isCreated() || scalar_rgb_.empty()) return;
+  scalar_color_buffer_.bind();
+  scalar_color_buffer_.setUsagePattern(QOpenGLBuffer::StaticDraw);
+  scalar_color_buffer_.allocate(
+      scalar_rgb_.data(), static_cast<int>(scalar_rgb_.size() * sizeof(float)));
+  scalar_color_buffer_.release();
 }
 
 void PointCloudViewer::upload_statuses() {

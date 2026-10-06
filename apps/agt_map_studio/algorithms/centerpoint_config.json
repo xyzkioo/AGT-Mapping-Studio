@@ -1,0 +1,40 @@
+{
+  "parked_car_confidence": 0.65,
+  "moving_object_confidence": 0.1,
+  "person_confidence_without_confirmed_motion": 0.3,
+  "minimum_detection_score": {
+    "pedestrian": 0.1,
+    "car": 0.23
+  },
+  "minimum_current_sweep_points": {
+    "pedestrian": 3,
+    "car": 5
+  },
+  "nms_radius_m": {
+    "pedestrian": 0.3,
+    "car": 1.6
+  },
+  "maximum_track_gap_s": 2.5,
+  "minimum_track_frames": 3,
+  "minimum_track_span_s": 1.0,
+  "minimum_motion_speed_mps": 0.25,
+  "minimum_motion_displacement_m": 0.7,
+  "minimum_motion_fit_r2": 0.6,
+  "maximum_association_speed_mps": {
+    "pedestrian": 2.5,
+    "car": 6.0
+  },
+  "association_position_slack_m": {
+    "pedestrian": 0.65,
+    "car": 1.0
+  },
+  "maximum_box_size_ratio": 2.5,
+  "box_bottom_trim_m": 0.08,
+  "box_z_reference": "bottom",
+  "parked_surface_support_radius_m": 0.3,
+  "self_point_radius_m": 0.6,
+  "map_point_match_radius_m": 0.08,
+  "background_match_radius_m": 0.04,
+  "background_minimum_distinct_frames": 3,
+  "parked_location_match_radius_m": 0.8
+}

@@ -14,6 +14,7 @@
 #include <QVector>
 
 #include <functional>
+#include <optional>
 #include <vector>
 
 class QAction;
@@ -36,10 +37,14 @@ public:
   explicit MainWindow(const QString &config_path, QWidget *parent = nullptr);
 
   bool open_pcd(const QString &path, QString *error = nullptr);
+  bool set_scalar_color_field(const QString &field_name,
+                              std::optional<float> minimum,
+                              std::optional<float> maximum, QString *error = nullptr);
   // A mapping package directory (map.pcd + manifest.yaml ...) or a v3 map
   // package directory (localization/global_map.pcd + navigation/map.yaml).
   bool open_mapping_package(const QString &directory, QString *error = nullptr);
   bool open_occupancy_map(const QString &path, QString *error = nullptr);
+  bool save_occupancy_map(const QString &directory, QString *error = nullptr);
   bool open_session(const QString &session_file, QString *error = nullptr);
   // Lightweight post-mapping review: keep the PCD as provenance, but load
   // only the generated 2D map into the UI.
@@ -58,6 +63,8 @@ private slots:
   void export_clean_map_dialog();
   void generate_occupancy_preview_dialog();
   void save_refinement_dialog();
+  void save_2d_map_dialog();
+  void save_2d_map_as_dialog();
   void export_navigation_map_dialog();
   void confirm_mapping_review();
   void export_refinement_rules_dialog();
@@ -79,6 +86,7 @@ private slots:
   void toggle_axis(bool checked);
   void toggle_background(bool checked);
   void toggle_height_coloring(bool checked);
+  void color_by_scalar_field_dialog();
   void show_controls();
   void show_workflow_help();
   void show_stats(const QString &text);
@@ -117,6 +125,10 @@ private:
   bool load_navigation_dir_into_2d(const QString &directory, QString *error);
   bool write_pipeline_config(QString *error) const;
   void save_session_quietly();
+  bool run_mapping_algorithms();
+  bool protect_unsaved_edits();
+  bool save_2d_interactively(bool choose_directory);
+  bool has_unsaved_2d_edits() const;
 
   PointCloudViewer *viewer_ = nullptr;
   OccupancyViewer *occupancy_viewer_ = nullptr;
@@ -142,6 +154,8 @@ private:
   QMenu *view_menu_ = nullptr;
   QMenu *tools_menu_ = nullptr;
   QAction *confirm_review_action_ = nullptr;
+  QAction *save_2d_action_ = nullptr;
+  QAction *save_2d_as_action_ = nullptr;
 
   RefinementModel refinement_model_;
   SelectionManager selection_manager_;
@@ -155,6 +169,9 @@ private:
   QString review_base_map_;
   QString review_output_;
   bool review_mode_ = false;
+  QString saved_2d_fingerprint_;
+  QString saved_2d_directory_;
+  QString saved_3d_fingerprint_;
 };
 
 }  // namespace agt_map_studio

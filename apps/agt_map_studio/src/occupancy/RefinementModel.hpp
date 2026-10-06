@@ -63,6 +63,7 @@ public:
   static std::string timestamp_now();
 
 private:
+  bool write_navigation_files(const std::string &output_dir, std::string *error) const;
   void set_history_undone(std::size_t id, bool undone);
   void rebuild_overrides_from_history();
 

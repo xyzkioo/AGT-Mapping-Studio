@@ -13,6 +13,9 @@ for overlay in "$WORKSPACE/install/setup.bash" "$WORKSPACE/install_mapping_frame
     source "$overlay"
   fi
 done
+if [[ -f "$ROOT/.studio-install/setup.bash" ]]; then
+  source "$ROOT/.studio-install/setup.bash"
+fi
 export AGT_MAP_ROOT="${AGT_MAP_ROOT:-$WORKSPACE/maps}"
 if ! ros2 pkg executables agt_map_studio 2>/dev/null | grep -Fqx -- "agt_map_studio map_viewer"; then
   echo "agt_map_studio is not built in the sourced overlays; build it first." >&2
