@@ -209,7 +209,7 @@ def sha(path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, default=HERE)
-    parser.add_argument("--config", type=Path, default=HERE / "config.json")
+    parser.add_argument("--config", type=Path, default=HERE / "centerpoint_config.json")
     parser.add_argument("--detections", type=Path, required=True)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--baseline", type=Path, required=True)
@@ -229,7 +229,6 @@ def main():
     package = args.package
     poses_path = package / "poses_timed.txt"
     inputs = [raw_path, source, baseline_path, parked_path, evidence_path, poses_path]
-    hashes = {str(p): sha(p) for p in inputs}
     header, fields, data = read_pcd(source)
     col = {name: i for i, name in enumerate(fields)}
     xyz = data[:, [col[k] for k in ("x", "y", "z")]].astype(float)
@@ -268,10 +267,8 @@ def main():
     candidate_sets = defaultdict(set)
     outside_support = np.zeros(len(data), dtype=np.uint16)
     scan_stats = []
-    scan_hashes = {}
     for frame in sorted(poses):
         patch_path = package / "patches" / f"{frame}.pcd"
-        scan_hashes[str(patch_path)] = sha(patch_path)
         _, names, patch = read_pcd(patch_path)
         body = patch[:, [names.index(k) for k in ("x", "y", "z")]].astype(float)
         _, translation, rotation = poses[frame]
@@ -367,7 +364,6 @@ def main():
     report = {
         "status": "offline_review", "config": config, "point_count": len(data), "output_pcd": str(output_path),
         "formula": "base=1-max(original_motion_score,visibility_dynamic_mask); confidence=min(base,parked_car_confidence for supported parked-car points,person_confidence_without_confirmed_motion for repeated person points,moving_object_confidence for motion-confirmed person points)",
-        "source_hashes": hashes, "scan_hashes": scan_hashes,
         "raw_detection_counts": dict(Counter(d["class"] for d in raw["detections"])),
         "selected_detection_counts": dict(Counter(d["class"] for d in selected)), "rejection_counts": rejection,
         "selected_person_detections_inside_old_3m_exclusion": int(sum(d["class"] == "pedestrian" and np.linalg.norm(d["box_body"][:2]) < 3 for d in selected)),
@@ -406,12 +402,6 @@ def main():
                             "after_confidence": confidence[ids].tolist(), "person_mask": person[ids].tolist(),
                             "motion_confirmed": moving[ids].tolist(), "background_protected": background[ids].tolist()}
         report["bcd_regression"] = cells
-    for p in inputs:
-        if sha(p) != hashes[str(p)]:
-            raise RuntimeError(f"Input was changed: {p}")
-    for p, expected in scan_hashes.items():
-        if sha(p) != expected:
-            raise RuntimeError(f"Input scan was changed: {p}")
     # Read the emitted artifact independently and verify payload preservation.
     _, emitted_fields, emitted = read_pcd(output_path)
     if not np.array_equal(emitted[:, [emitted_fields.index(k) for k in ("x", "y", "z", "motion_score", "support_confidence")]],
@@ -426,7 +416,7 @@ def main():
     bcd_passed = "bcd_regression" in report and all(
         max(c["after_confidence"]) <= config["moving_object_confidence"] + 1e-6
         for c in report["bcd_regression"].values())
-    report["validation"] = {"source_inputs_unchanged": True, "geometry_motion_support_preserved": True,
+    report["validation"] = {"input_sha256_checked": False, "geometry_motion_support_preserved": True,
                              "confidence_finite_and_bounded": True, "visibility_dynamic_stays_zero": True,
                              "motion_confirmed_confidence_capped": True, "no_target_unchanged_vs_base": True,
                              "new_scores_never_raise_confidence_above_visibility_base": True,

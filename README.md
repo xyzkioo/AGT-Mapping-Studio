@@ -139,3 +139,7 @@ Optimized PCD map artifact
 ```
 
 详细接口、地图格式、架构和研究扩展点见 [`docs/`](docs/)，交付验收记录见 [docs/delivery_acceptance.md](docs/delivery_acceptance.md)。本仓库独立完成建图、PCD→PGM、二维编辑和人工确认；确认后的地图可由其他运行时按需使用。
+
+## 独立离线地图处理
+
+算法包：[agt_map_processing](processing/agt_map_processing/README.md)；通用执行器：[agt_map_runner](processing/agt_map_runner/README.md)。工具箱入口：`bash scripts/process_map.sh --package <地图数据包> --algorithm agt.offline_navigation --output <新目录>`。地图数据和 `processing_profile.json` 存放在外部数据目录；Studio 自动发现算法并负责查看与编辑。

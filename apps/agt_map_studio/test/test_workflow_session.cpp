@@ -4,6 +4,7 @@
 #include <QTemporaryDir>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 
 #include <gtest/gtest.h>
 
@@ -148,6 +149,22 @@ TEST(WorkflowSessionTest, FixedNavigationIgnoresUnusedParametersButDetectsChange
   EXPECT_EQ(session.state(WorkflowSession::Navigation), StageState::Stale);
 }
 
+TEST(WorkflowSessionTest, RegisteredAlgorithmResultIgnoresConverterParameters) {
+  QTemporaryDir dir;
+  const QString pcd=write_file(dir,"map.pcd","source");
+  const QString nav=dir.filePath("artifacts/navigation"); QDir().mkpath(nav);
+  const QString pgm=write_file(dir,"artifacts/navigation/map.pgm","raster");
+  const QJsonObject artifact{{"type","occupancy_map"},{"path",nav+"/map.yaml"}};
+  const QJsonObject result{{"schema_version",1},{"status","complete"},{"algorithm_id","external.plugin"},
+                          {"outputs",QJsonArray{artifact}}};
+  write_file(dir,"result.json",QJsonDocument(result).toJson());
+  WorkflowSession session;session.reset(pcd,QString());
+  session.mark_done(WorkflowSession::Navigation,nav,WorkflowSession::sha256_file(pgm));
+  session.converter().resolution=.3;
+  EXPECT_TRUE(session.navigation_uses_algorithm());
+  EXPECT_EQ(session.state(WorkflowSession::Navigation),StageState::Fresh);
+}
+
 TEST(WorkflowSessionTest, GenericNavigationStillUsesConverterParameters) {
   QTemporaryDir dir;
   WorkflowSession session;
@@ -155,6 +172,51 @@ TEST(WorkflowSessionTest, GenericNavigationStillUsesConverterParameters) {
   session.mark_done(WorkflowSession::Navigation, dir.path(), "pgm");
   session.converter().resolution = .11;
   EXPECT_EQ(session.state(WorkflowSession::Navigation), StageState::Stale);
+}
+
+TEST(WorkflowSessionTest, AlgorithmInputsDescriptorAndParametersInvalidateResults) {
+  QTemporaryDir dir;
+  const QString pcd = write_file(dir, "map.pcd", "source");
+  const QString asset = write_file(dir, "detections.json", "detections");
+  const QString descriptor = write_file(dir, "algorithm.yaml", "original descriptor");
+  const QString nav = dir.filePath("artifacts/navigation"); QDir().mkpath(nav);
+  const QString pgm = write_file(dir, "artifacts/navigation/map.pgm", "raster");
+  QFileInfo info(asset);
+  QJsonObject snapshot{{"kind","file"},{"size",double(info.size())},
+                       {"mtime_ms",double(info.lastModified().toMSecsSinceEpoch())}};
+  QJsonObject result{{"status","complete"},{"algorithm_id","external.plugin"},
+                    {"parameters",QJsonObject{{"radius",.2}}},
+                    {"inputs",QJsonObject{{"detections",asset}}},
+                    {"provenance",QJsonObject{{"descriptor",descriptor},{"descriptor_text","original descriptor"},
+                        {"inputs",QJsonObject{{"detections",snapshot}}}}},
+                    {"outputs",QJsonArray{QJsonObject{{"type","occupancy_map"},{"path",nav+"/map.yaml"}}}}};
+  write_file(dir,"result.json",QJsonDocument(result).toJson());
+  WorkflowSession session;session.reset(pcd,QString());
+  session.mark_done(WorkflowSession::Navigation,nav,WorkflowSession::sha256_file(pgm));
+  ASSERT_EQ(session.state(WorkflowSession::Navigation),StageState::Fresh);
+  write_file(dir,"detections.json","changed detection assets");
+  EXPECT_EQ(session.state(WorkflowSession::Navigation),StageState::Stale);
+  info.refresh(); snapshot["size"]=double(info.size());
+  snapshot["mtime_ms"]=double(info.lastModified().toMSecsSinceEpoch());
+  auto provenance=result["provenance"].toObject();
+  provenance["inputs"]=QJsonObject{{"detections",snapshot}};result["provenance"]=provenance;
+  write_file(dir,"result.json",QJsonDocument(result).toJson());
+  session.mark_done(WorkflowSession::Navigation,nav,WorkflowSession::sha256_file(pgm));
+  ASSERT_EQ(session.state(WorkflowSession::Navigation),StageState::Fresh);
+  write_file(dir,"algorithm.yaml","new defaults");
+  EXPECT_EQ(session.state(WorkflowSession::Navigation),StageState::Stale);
+  write_file(dir,"algorithm.yaml","original descriptor");
+  result["parameters"]=QJsonObject{{"radius",.3}};
+  write_file(dir,"result.json",QJsonDocument(result).toJson());
+  EXPECT_EQ(session.state(WorkflowSession::Navigation),StageState::Stale);
+}
+
+TEST(WorkflowSessionTest, AlgorithmAvailabilityRemainsVisibleAfterManualDeletions) {
+  QTemporaryDir dir;
+  write_file(dir,"processing_profile.json","{}");
+  WorkflowSession session; session.reset(write_file(dir,"map.pcd","source"),dir.path());
+  session.set_refinement_fingerprint("manual deletion");
+  EXPECT_TRUE(session.algorithm_available());
 }
 
 }  // namespace agt_map_studio

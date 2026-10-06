@@ -27,6 +27,8 @@
 #include <QDoubleSpinBox>
 #include "ui/StudioFileDialog.hpp"
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QFormLayout>
 #include <QImage>
 #include <QInputDialog>
@@ -1070,7 +1072,7 @@ bool MainWindow::save_occupancy_map(const QString &directory, QString *error) {
   saved_2d_fingerprint_ = QString::fromStdString(refinement_model_.active_fingerprint());
   session_.set_editor_map_path(QDir(output).filePath("map.yaml"));
   if (!session_.empty() && session_.state(WorkflowSession::Navigation) == StageState::Fresh &&
-      (session_.fixed_pipeline_available() || session_.navigation_uses_fixed_pipeline())) {
+      (session_.algorithm_available() || session_.navigation_uses_algorithm())) {
     session_.mark_done(WorkflowSession::Patch, output,
         WorkflowSession::sha256_file(QDir(output).filePath("map.pgm")), QStringLiteral("saved edited 2D map"));
     save_session_quietly();
@@ -1652,8 +1654,8 @@ void MainWindow::run_patch() {
   if (session_.state(WorkflowSession::Navigation) != StageState::Fresh) {
     return fail_queue(QStringLiteral("Navigation layers are missing or stale: run step 3 first."));
   }
-  if (session_.navigation_uses_fixed_pipeline() || session_.fixed_pipeline_available()) {
-    // Fixed-chain layers are ordinary PGM/YAML, not agt_navigation_v3 assets.
+  if (session_.navigation_uses_algorithm() || session_.algorithm_available()) {
+    // Registered algorithms can export ordinary PGM/YAML, not agt_navigation_v3 assets.
     // Save edits directly; rerunning the point-cloud chain would replace them.
     const QString output = QDir(session_.work_dir()).filePath(
         QStringLiteral("navigation_patched_%1").arg(stamp()));
@@ -1665,7 +1667,7 @@ void MainWindow::run_patch() {
     }
     session_.mark_done(WorkflowSession::Patch, output,
         WorkflowSession::sha256_file(QDir(output).filePath("map.pgm")),
-        QStringLiteral("saved 2D edits on fixed pipeline map"));
+        QStringLiteral("saved 2D edits on registered algorithm map"));
     saved_2d_fingerprint_ = QString::fromStdString(refinement_model_.active_fingerprint());
     saved_2d_directory_ = output;
     session_.set_editor_map_path(QDir(output).filePath("map.yaml"));
@@ -1718,20 +1720,39 @@ bool MainWindow::write_pipeline_config(QString *error) const {
         << YAML::Key << "effective_pcd" << YAML::Value << session_.effective_pcd().toStdString()
         << YAML::Key << "effective_pcd_sha256" << YAML::Value << session_.effective_pcd_sha256().toStdString()
         << YAML::EndMap;
-    out << YAML::Key << "converter" << YAML::Value << YAML::BeginMap
-        << YAML::Key << "tool" << YAML::Value << "agt_map_converter/pcd_to_nav_map"
-        << YAML::Key << "arguments" << YAML::Value << YAML::Flow << YAML::BeginSeq;
-    for (const QString &argument : session_.converter().to_arguments(session_.effective_poses_path())) {
-      out << argument.toStdString();
+    const QJsonObject algorithm = session_.navigation_algorithm_result();
+    out << YAML::Key << "converter" << YAML::Value << YAML::BeginMap;
+    if (!algorithm.isEmpty()) {
+      out << YAML::Key << "tool" << YAML::Value << "agt_map_runner/map_runner"
+          << YAML::Key << "algorithm_id" << YAML::Value << algorithm.value("algorithm_id").toString().toStdString()
+          << YAML::Key << "parameters" << YAML::Value
+          << YAML::Load(QJsonDocument(algorithm.value("parameters").toObject()).toJson().toStdString())
+          << YAML::Key << "inputs" << YAML::Value
+          << YAML::Load(QJsonDocument(algorithm.value("inputs").toObject()).toJson().toStdString())
+          << YAML::Key << "result_json" << YAML::Value << session_.navigation_result_path().toStdString();
+    } else if (session_.navigation_uses_algorithm()) {
+      out << YAML::Key << "tool" << YAML::Value << "registered_algorithm_legacy_result"
+          << YAML::Key << "report" << YAML::Value
+          << QDir(session_.record(WorkflowSession::Navigation).path).filePath("../report.json").toStdString();
+    } else {
+      out << YAML::Key << "tool" << YAML::Value << "agt_map_converter/pcd_to_nav_map"
+          << YAML::Key << "arguments" << YAML::Value << YAML::Flow << YAML::BeginSeq;
+      for (const QString &argument : session_.converter().to_arguments(session_.effective_poses_path()))
+        out << argument.toStdString();
+      out << YAML::EndSeq;
     }
-    out << YAML::EndSeq << YAML::Key << "output" << YAML::Value
+    out << YAML::Key << "output" << YAML::Value
         << session_.record(WorkflowSession::Navigation).path.toStdString() << YAML::EndMap;
+    const QString edit_directory = session_.effective_navigation_dir();
+    const QString saved_patch = QDir(edit_directory).filePath("map_refinement.yaml");
+    const QString saved_keepouts = QDir(edit_directory).filePath("keepout_zones.yaml");
     out << YAML::Key << "manual_patch" << YAML::Value << YAML::BeginMap
         << YAML::Key << "applied" << YAML::Value << session_.has_2d_edits()
         << YAML::Key << "patch_yaml" << YAML::Value
-        << (session_.has_2d_edits() ? session_.navigation_patch_path().toStdString() : std::string())
+        << (session_.has_2d_edits() ? (QFileInfo::exists(saved_patch) ? saved_patch : session_.navigation_patch_path()).toStdString() : std::string())
         << YAML::Key << "keepout_zones" << YAML::Value
-        << (refinement_model_.forbidden_zones().empty() ? std::string() : session_.keepout_zones_path().toStdString())
+        << (refinement_model_.forbidden_zones().empty() ? std::string() :
+            (QFileInfo::exists(saved_keepouts) ? saved_keepouts : session_.keepout_zones_path()).toStdString())
         << YAML::Key << "output" << YAML::Value << session_.record(WorkflowSession::Patch).path.toStdString()
         << YAML::EndMap;
     out << YAML::Key << "relocalization" << YAML::Value << YAML::BeginMap
@@ -1841,13 +1862,15 @@ void MainWindow::show_controls() {
 void MainWindow::show_workflow_help() {
   QMessageBox::information(this, QStringLiteral("Publish Workflow"),
       QStringLiteral(
-          "1. 3D refinement: apply deletion rules or export the edited cloud to map.pcd\n"
-          "2. Relocalization: build_relocalization_assets from the effective PCD\n"
-          "3. Navigation: run the fixed pipeline for a matching mapping package, "
-          "or use pcd_to_nav_map and validate_nav_map\n"
-          "4. 2D patch: save the edited grid, edit history and keepout zones\n"
+          "1. 3D refinement: apply deletion rules if you edited the cloud\n"
+          "2. Relocalization: build assets from the effective PCD, or reuse fresh assets\n"
+          "3. Navigation: select a compatible registered algorithm; maps without a compatible "
+          "registration may use pcd_to_nav_map and validate_nav_map\n"
+          "4. 2D patch: save/apply edits only if the grid or keepout zones changed\n"
           "5. Publish: create_map_package with a map ID and version\n\n"
-          "Open and save standalone 2D maps using the File menu.\n"
+          "Steps 1 and 4 are optional without edits. Publishing requires fresh navigation and relocalization assets.\n"
+          "Registered pipelines currently reject manual 3D deletions rather than silently switching algorithms.\n"
+          "File > Save 2D Map saves an editable map; Export Edited PGM writes a preview. Neither publishes a package.\n"
           "Changing 3D deletions makes dependent outputs STALE; changing 2D edits makes steps 4-5 STALE.\n"
           "An existing published map version cannot be overwritten.\n"
           "Tool logs: studio_tools.log in the work directory; session: studio_session.yaml.\n"

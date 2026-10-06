@@ -14,14 +14,6 @@ find_package(Eigen3 REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io)
 find_package(yaml-cpp REQUIRED)
-find_library(OCTOMAP_LIBRARY octomap REQUIRED)
-find_library(OCTOMATH_LIBRARY octomath REQUIRED)
-add_executable(studio_octomap_builder algorithms/build_octomap.cpp)
-target_link_libraries(studio_octomap_builder ${OCTOMAP_LIBRARY} ${OCTOMATH_LIBRARY})
-install(TARGETS studio_octomap_builder DESTINATION lib/${PROJECT_NAME})
-install(DIRECTORY algorithms DESTINATION share/${PROJECT_NAME}
-  PATTERN "__pycache__" EXCLUDE)
-
 # Qt6 is preferred when available, but this workspace currently provides Qt5.
 find_package(Qt6 QUIET COMPONENTS Widgets OpenGLWidgets)
 if(Qt6_FOUND)
@@ -85,7 +77,7 @@ install(DIRECTORY config
 )
 
 if(BUILD_TESTING)
-  option(STUDIO_ALGORITHM_SMOKE "Run fixed pipeline using current MID360 assets" OFF)
+  option(STUDIO_ALGORITHM_SMOKE "Test registered algorithms and standalone editing" OFF)
   if(STUDIO_ALGORITHM_SMOKE)
     get_target_property(STUDIO_SOURCES map_viewer SOURCES)
     list(REMOVE_ITEM STUDIO_SOURCES src/main.cpp)
@@ -96,16 +88,13 @@ if(BUILD_TESTING)
     target_link_libraries(navigation_algorithms_smoke ${PCL_LIBRARIES} ${QT_WIDGETS_TARGET}
       ${QT_OPENGL_TARGET} yaml-cpp agt_pcd2grid_exporter::agt_pcd2grid_exporter OpenGL::GL)
     add_test(NAME test_navigation_algorithms_smoke COMMAND navigation_algorithms_smoke)
-    set_tests_properties(test_navigation_algorithms_smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    set_tests_properties(test_navigation_algorithms_smoke PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
       TIMEOUT 70)
     add_test(NAME test_standalone_2d_workflow COMMAND navigation_algorithms_smoke --check-2d)
     set_tests_properties(test_standalone_2d_workflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     add_test(NAME test_file_dialog_navigation COMMAND navigation_algorithms_smoke --check-file-dialog)
     set_tests_properties(test_file_dialog_navigation PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
   endif()
-  find_package(Python3 REQUIRED COMPONENTS Interpreter)
-  add_test(NAME test_algorithm_pipeline
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_algorithm_pipeline.py)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_pcd_loader
     test/test_pcd_loader.cpp

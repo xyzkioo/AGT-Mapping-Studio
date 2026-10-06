@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>agt_map_processing</name>
+  <version>0.1.0</version>
+  <description>Standalone offline map processing, independent of Studio and map assets.</description>
+  <maintainer email="xuanyang.robotics@gmail.com">AGT Mapping Team</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>liboctomap-dev</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-matplotlib</exec_depend>
+  <exec_depend>python3-pil</exec_depend>
+  <test_depend>python3-numpy</test_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

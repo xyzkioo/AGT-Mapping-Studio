@@ -6,7 +6,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QDirIterator>
 
 #include <yaml-cpp/yaml.h>
 
@@ -14,6 +16,27 @@
 #include <fstream>
 
 namespace agt_map_studio {
+
+namespace {
+bool metadata_matches(const QString &path, const QJsonObject &snapshot) {
+  auto matches = [](const QFileInfo &info, const QJsonObject &entry) {
+    return info.isFile() && double(info.size()) == entry.value("size").toDouble(-1) &&
+           double(info.lastModified().toMSecsSinceEpoch()) == entry.value("mtime_ms").toDouble(-1);
+  };
+  if (snapshot.value("kind").toString() == "file") return matches(QFileInfo(path), snapshot);
+  if (!QFileInfo(path).isDir()) return false;
+  const auto entries = snapshot.value("entries").toArray();
+  int count = 0;
+  QDirIterator files(path, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
+  while (files.hasNext()) { files.next(); ++count; }
+  if (count != entries.size()) return false;
+  for (const auto &entry : entries) {
+    const auto data = entry.toObject();
+    if (!matches(QFileInfo(QDir(path).filePath(data.value("path").toString())), data)) return false;
+  }
+  return true;
+}
+}
 
 QStringList ConverterParameters::to_arguments(const QString &poses_path) const {
   QStringList arguments;
@@ -113,10 +136,28 @@ StageState WorkflowSession::state(Stage stage) const {
   const auto found = records_.find(static_cast<int>(stage));
   if (found == records_.end() || found->second.path.isEmpty()) return StageState::Missing;
   if (!QFileInfo::exists(found->second.path)) return StageState::Missing;
-  if (stage == Navigation && navigation_uses_fixed_pipeline()) {
+  if (stage == Navigation && navigation_uses_algorithm()) {
     // Older fixed-pipeline sessions mistakenly included unused converter settings.
     // Ignore those settings, but still reject a different source or changed raster.
     const auto &r = found->second;
+    const auto result = navigation_algorithm_result();
+    const QString selected = qEnvironmentVariable("AGT_MAP_ALGORITHM");
+    if (!selected.isEmpty() && selected != result.value("algorithm_id").toString() && !result.isEmpty())
+      return StageState::Stale;
+    const QString marker = QStringLiteral("|algorithm-result:");
+    if (r.input_fingerprint.contains(marker) &&
+        r.input_fingerprint.section(marker, 1) != sha256_file(navigation_result_path())) return StageState::Stale;
+    const auto provenance = result.value("provenance").toObject();
+    if (!provenance.isEmpty()) {
+      QFile descriptor(provenance.value("descriptor").toString());
+      // Removing registration hides a plugin; it does not invalidate its existing outputs.
+      if (descriptor.exists() && (!descriptor.open(QIODevice::ReadOnly) ||
+          QString::fromUtf8(descriptor.readAll()) != provenance.value("descriptor_text").toString())) return StageState::Stale;
+      const auto inputs = result.value("inputs").toObject();
+      const auto snapshots = provenance.value("inputs").toObject();
+      for (auto it = snapshots.begin(); it != snapshots.end(); ++it)
+        if (!metadata_matches(inputs.value(it.key()).toString(), it.value().toObject())) return StageState::Stale;
+    }
     return r.input_fingerprint.section('|', 0, 0) == effective_pcd_sha256() &&
                    r.output_sha256 == sha256_file(QDir(r.path).filePath("map.pgm"))
                ? StageState::Fresh : StageState::Stale;
@@ -126,17 +167,47 @@ StageState WorkflowSession::state(Stage stage) const {
              : StageState::Stale;
 }
 
-bool WorkflowSession::fixed_pipeline_available() const {
-  if (empty() || has_3d_edits()) return false;
+bool WorkflowSession::algorithm_available() const {
+  if (empty()) return false;
   const QString package = source_package_dir_.isEmpty()
       ? QFileInfo(source_pcd_).absolutePath() : source_package_dir_;
-  return QFileInfo::exists(QDir(package).filePath("poses_timed.txt")) &&
-         QFileInfo(QDir(package).filePath("patches")).isDir();
+  return QFileInfo::exists(QDir(package).filePath("processing_profile.json")) ||
+         QFileInfo::exists(qEnvironmentVariable("AGT_MAP_PROFILE")) ||
+         !qEnvironmentVariable("AGT_MAP_ALGORITHM").isEmpty() ||
+         !qEnvironmentVariable("AGT_ALGORITHM_PATH").isEmpty();
 }
 
-bool WorkflowSession::navigation_uses_fixed_pipeline() const {
+QString WorkflowSession::navigation_result_path() const {
+  const QString nav = record(Navigation).path;
+  if (nav.isEmpty()) return QString();
+  for (const QString &relative : {QStringLiteral("../result.json"), QStringLiteral("../../result.json")}) {
+    QFile result(QDir(nav).filePath(relative));
+    if (!result.open(QIODevice::ReadOnly)) continue;
+    const auto data = QJsonDocument::fromJson(result.readAll()).object();
+    if (data.value("status").toString() != "complete") continue;
+    for (const auto &value : data.value("outputs").toArray()) {
+      const auto artifact = value.toObject();
+      if (artifact.value("type").toString() == "occupancy_map" &&
+          QDir::cleanPath(artifact.value("path").toString()) == QDir::cleanPath(QDir(nav).filePath("map.yaml")))
+        return QFileInfo(result).absoluteFilePath();
+    }
+  }
+  return QString();
+}
+
+QJsonObject WorkflowSession::navigation_algorithm_result() const {
+  const QString path = navigation_result_path();
+  if (path.isEmpty()) return QJsonObject();
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly)) return QJsonObject();
+  return QJsonDocument::fromJson(file.readAll()).object();
+}
+
+bool WorkflowSession::navigation_uses_algorithm() const {
   const QString nav = record(Navigation).path;
   if (nav.isEmpty()) return false;
+  if (!navigation_result_path().isEmpty()) return true;
+  // Compatibility with maps produced before the generic registry was introduced.
   QFile report(QDir(nav).filePath("../report.json"));
   if (!report.open(QIODevice::ReadOnly)) return false;
   const auto data = QJsonDocument::fromJson(report.readAll()).object();
@@ -162,6 +233,8 @@ void WorkflowSession::mark_done(Stage stage, const QString &path, const QString 
   record.updated_at = now_iso8601();
   record.note = note;
   records_[static_cast<int>(stage)] = record;
+  if (stage == Navigation && !navigation_result_path().isEmpty())
+    records_[static_cast<int>(stage)].input_fingerprint += QStringLiteral("|algorithm-result:") + sha256_file(navigation_result_path());
 }
 
 void WorkflowSession::clear(Stage stage) { records_.erase(static_cast<int>(stage)); }

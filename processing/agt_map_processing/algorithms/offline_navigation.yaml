@@ -1,0 +1,29 @@
+schema_version: 1
+id: agt.offline_navigation
+name: Offline navigation pipeline
+required_inputs: [map_pcd, poses, poses_timed, patches, metadata, profile, detections, source, baseline, parked, evidence, tracks]
+command:
+  - ros2
+  - run
+  - agt_map_processing
+  - process_map
+  - --profile
+  - '{profile}'
+  - --package
+  - '{map_package}'
+  - --output
+  - '{artifact_dir}'
+  - --radius
+  - '{radius}'
+  - --neighbors
+  - '{neighbors}'
+  - --frames
+  - '{frames}'
+parameters:
+  radius: {type: float, default: 0.2, min: 0.000001, max: 5}
+  neighbors: {type: int, default: 5, min: 1, max: 100}
+  frames: {type: int, default: 3, min: 1, max: 255}
+outputs:
+  - {type: map_package, path: '{artifact_dir}'}
+  - {type: point_cloud, path: '{artifact_dir}/map.pcd'}
+  - {type: occupancy_map, path: '{artifact_dir}/navigation/map.yaml'}

@@ -198,22 +198,13 @@ void WorkflowPanel::paint_badge(QLabel *badge, StageState state, bool applicable
 }
 
 void WorkflowPanel::refresh(const WorkflowSession &session, bool tool_running) {
-  const bool fixed = session.fixed_pipeline_available();
-  if (fixed) {
-    ConverterParameters actual;
-    // Fixed chain exports geometry_occupancy, not the historical-route draft.
-    actual.use_trajectory = false;
-    set_converter(actual);
-  }
-  converter_box_->setEnabled(!fixed && !tool_running);
-  converter_box_->setTitle(fixed ? QStringLiteral("Pipeline parameters (Fixed)")
-                                 : QStringLiteral("Converter parameters (pcd_to_nav_map)"));
-  converter_box_->setToolTip(fixed
-      ? QStringLiteral("Shows the actual pipeline parameters. Generic converter settings do not apply. Trajectory data does not directly clear obstacles.")
-      : QString());
-  steps_[2].detail->setText(fixed
-      ? QStringLiteral("CenterPoint + vehicle body filter + isolated point filter + OctoMap (fixed configuration)")
-      : QStringLiteral("pcd_to_nav_map + validate_nav_map (agt_navigation_v3)."));
+  const bool registered = session.algorithm_available();
+  converter_box_->setEnabled(!registered && !tool_running);
+  converter_box_->setVisible(!registered);
+  converter_box_->setTitle(QStringLiteral("Converter parameters (pcd_to_nav_map)"));
+  steps_[2].detail->setText(registered
+      ? QStringLiteral("Registered map algorithm (selected when Run is clicked). Parameters are managed by the algorithm package.")
+      : QStringLiteral("Registered algorithms, or pcd_to_nav_map + validate_nav_map."));
   if (session.empty()) {
     source_label_->setText(QStringLiteral("No point cloud loaded. Open a 2D map and save it using File > Save 2D Map."));
   } else {
@@ -259,10 +250,10 @@ void WorkflowPanel::refresh(const WorkflowSession &session, bool tool_running) {
   steps_[4].run->setEnabled(!tool_running && reasons.isEmpty());
   const bool reloc_available = ExternalToolRunner::ros2_executable_available(
       QStringLiteral("agt_global_relocalization_native"), QStringLiteral("build_relocalization_assets"));
-  const bool convert_available = fixed ||
+  const bool convert_available = registered ||
       (ExternalToolRunner::ros2_executable_available(QStringLiteral("agt_map_converter"), QStringLiteral("pcd_to_nav_map")) &&
        ExternalToolRunner::ros2_executable_available(QStringLiteral("agt_map_converter"), QStringLiteral("validate_nav_map")));
-  const bool patch_available = fixed || session.navigation_uses_fixed_pipeline() ||
+  const bool patch_available = registered || session.navigation_uses_algorithm() ||
       ExternalToolRunner::ros2_executable_available(QStringLiteral("agt_map_converter"), QStringLiteral("patch_nav_map"));
   const bool publish_available = ExternalToolRunner::ros2_executable_available(
       QStringLiteral("agt_map_manager"), QStringLiteral("create_map_package"));

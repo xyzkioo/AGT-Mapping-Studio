@@ -22,6 +22,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QPlainTextEdit>
 #include <QStatusBar>
 #include <QTimer>
@@ -153,10 +154,10 @@ int main(int argc,char **argv) {
     auto *workflow = window.findChild<agt_map_studio::WorkflowPanel*>();
     if (!workflow) return 23;
     workflow->read_converter(&restored);
-    if (restored.resolution != .1 || restored.max_step != .22 || restored.max_slope_deg != 20. || restored.use_trajectory) return 24;
+    // Algorithm parameters belong to the plugin, not to generic converter controls.
     bool locked = false;
     for (auto *group : workflow->findChildren<QGroupBox*>())
-      if (group->title().contains(QStringLiteral("Fixed"))) locked = !group->isEnabled();
+      if (group->title().contains(QStringLiteral("Converter parameters"))) locked = !group->isEnabled();
     if (!locked) return 25;
     const QVector<QPointF> polygon{{-50., 0.}, {-49., 0.}, {-49., 1.}, {-50., 1.}};
     auto *occupancy = window.findChild<agt_map_studio::OccupancyViewer*>();
@@ -183,14 +184,35 @@ int main(int argc,char **argv) {
     std::cout << "Parameter restore, fixed controls and edited-map save passed in temporary session\n";
     return 0;
   }
-  const auto share=QString::fromStdString(ament_index_cpp::get_package_share_directory("agt_map_studio"));
-  QFile profile(QDir(share).filePath("algorithms/current_map_profile.json"));
+  const QString profile_path = qEnvironmentVariable("AGT_MAP_PROFILE");
+  if (profile_path.isEmpty()) { std::cout << "Set AGT_MAP_PROFILE to run the dataset integration test\n"; return 77; }
+  QFile profile(profile_path);
   if (!profile.open(QIODevice::ReadOnly)) return 2;
   const auto preset=QJsonDocument::fromJson(profile.readAll()).object();
   agt_map_studio::MainWindow window(QString{});
   QString error;
-  if (!window.open_mapping_package(preset.value("package").toString(),&error)) {
+  if (!window.open_mapping_package(QDir(QFileInfo(profile_path).absolutePath()).absoluteFilePath(preset.value("package").toString()),&error)) {
     std::cerr<<error.toStdString()<<'\n'; return 3;
+  }
+  agt_map_studio::PublishTarget original_target;
+  window.findChild<agt_map_studio::WorkflowPanel*>()->read_publish_target(&original_target);
+  if (qEnvironmentVariableIsSet("AGT_TEST_3D_GUARD")) {
+    auto *viewer = window.findChild<agt_map_studio::PointCloudViewer*>();
+    viewer->select_height_band(-10000,10000);
+    QMetaObject::invokeMethod(&window,"set_mode_delete",Qt::DirectConnection);
+    QMetaObject::invokeMethod(&window,"delete_selected",Qt::DirectConnection);
+    QString message;
+    QTimer dismiss;
+    QObject::connect(&dismiss,&QTimer::timeout,[&]() {
+      for (auto *widget : QApplication::topLevelWidgets()) {
+        if (auto *box = qobject_cast<QMessageBox*>(widget)) { message=box->text();box->accept(); }
+      }
+    });
+    dismiss.start(20);
+    QMetaObject::invokeMethod(&window,"run_navigation",Qt::DirectConnection);
+    if (!message.contains("do not currently accept manual 3D deletion rules")) return 71;
+    std::cout << "Manual 3D deletions explicitly rejected; no silent converter fallback\n";
+    return 0;
   }
   QTimer timeout;
   timeout.setSingleShot(true);
@@ -201,14 +223,33 @@ int main(int argc,char **argv) {
     const QString message=window.statusBar()->currentMessage();
     if (!message.startsWith(QStringLiteral("Pipeline completed: "))) return;
     const QString output=message.mid(QStringLiteral("Pipeline completed: ").size());
-    QFile report(QDir(output).filePath("report.json"));
-    if (!report.open(QIODevice::ReadOnly)) {application.exit(5);return;}
-    auto data=QJsonDocument::fromJson(report.readAll()).object();
+    QFile result(QDir(output).filePath("result.json"));
+    if (!result.open(QIODevice::ReadOnly)) {application.exit(5);return;}
+    const auto manifest=QJsonDocument::fromJson(result.readAll()).object();
+    QString point_cloud, occupancy;
+    for (const auto &value : manifest.value("outputs").toArray()) {
+      const auto artifact=value.toObject();
+      if (artifact.value("type").toString()=="point_cloud") point_cloud=artifact.value("path").toString();
+      if (artifact.value("type").toString()=="occupancy_map") occupancy=artifact.value("path").toString();
+    }
     auto *viewer=window.findChild<agt_map_studio::PointCloudViewer*>();
-    const bool passed=data.value("output_points").toInt()==737997 && viewer &&
-      viewer->cloud().point_count()==737997 &&
-      data.value("grid_counts").toObject().value("254").toInt()==149032 &&
+    const QString expected_override=qEnvironmentVariable("AGT_TEST_POINT_COUNT");
+    const unsigned expected=expected_override.isEmpty()?737997:expected_override.toUInt();
+    bool passed=manifest.value("status").toString()=="complete" && viewer &&
+      viewer->cloud().point_count()==expected && QFile::exists(occupancy) &&
       QFile::exists(QDir(output).filePath("studio_session/studio_session.yaml"));
+    agt_map_studio::WorkflowSession saved_session;
+    passed=passed && saved_session.load(QDir(output).filePath("studio_session/studio_session.yaml"),&error) &&
+        saved_session.publish_target().map_id==original_target.map_id &&
+        saved_session.state(agt_map_studio::WorkflowSession::Navigation)==agt_map_studio::StageState::Fresh;
+    if (expected_override.isEmpty()) {
+      QFile report(QDir(QFileInfo(point_cloud).absolutePath()).filePath("report.json"));
+      if (!report.open(QIODevice::ReadOnly)) {application.exit(5);return;}
+      const auto data=QJsonDocument::fromJson(report.readAll()).object();
+      passed=passed && data.value("output_points").toInt()==737997 &&
+        data.value("grid_counts").toObject().value("254").toInt()==
+          (manifest.value("algorithm_id").toString()=="agt.lizhi_map_pipeline" ? 219553 : 149032);
+    }
     std::cout<<"Navigation action output: "<<output.toStdString()<<'\n';
     application.exit(passed?0:6);
   });

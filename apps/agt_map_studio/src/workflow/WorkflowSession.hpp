@@ -2,6 +2,7 @@
 
 #include <QString>
 #include <QStringList>
+#include <QJsonObject>
 
 #include <map>
 #include <string>
@@ -102,8 +103,10 @@ public:
   QString effective_pcd() const;
   QString effective_pcd_sha256() const;
   QString effective_poses_path() const;
-  bool fixed_pipeline_available() const;
-  bool navigation_uses_fixed_pipeline() const;
+  bool algorithm_available() const;
+  bool navigation_uses_algorithm() const;
+  QString navigation_result_path() const;
+  QJsonObject navigation_algorithm_result() const;
   // The navigation directory the publish step must package.
   QString effective_navigation_dir() const;
 

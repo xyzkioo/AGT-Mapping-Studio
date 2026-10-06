@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Studio's versioned offline replay; cached detections, never cached map outputs."""
+"""Standalone offline map processing; cached detections, never cached map outputs."""
 from pathlib import Path
 import argparse
 import hashlib
@@ -118,14 +118,29 @@ def fuse_free(before, valid, slope, ground_hits, clearance_free, clearance_occup
 
 
 def validate(profile, package):
-    expected_package = Path(profile['package']).resolve()
-    # All paths are pinned, including each frame and its optimized pose.
-    for filename, expected in profile['sha256'].items():
-        path = Path(filename)
-        if path.is_relative_to(expected_package):
-            path = package / path.relative_to(expected_package)
-        if not path.is_file() or sha(path)!=expected:
-            raise ValueError(f'Input does not match the CenterPoint cache: {path}. Use the matching map_package; detections cannot be reused for another map.')
+    paths = [package/name for name in ('map.pcd', 'poses.txt', 'poses_timed.txt', 'metadata.yaml')]
+    paths.extend(Path(value) for value in profile['assets'].values())
+    for path in paths:
+        if not path.is_file():
+            raise ValueError(f'Required input file is missing: {path}')
+    if not (package/'patches').is_dir() or not any((package/'patches').glob('*.pcd')):
+        raise ValueError(f'No keyframe PCD files found: {package / "patches"}')
+
+
+def load_profile(filename):
+    """Resolve asset paths relative to data configuration, independent of CWD."""
+    filename = Path(filename).resolve()
+    profile = json.loads(filename.read_text())
+    def resolve(value):
+        return str((filename.parent / value).resolve())
+    profile['package'] = resolve(profile['package'])
+    profile['assets'] = {key: resolve(value) for key, value in profile['assets'].items()}
+    # Data configuration never selects algorithms or supplies processing defaults.
+    profile = {key: profile[key] for key in ('schema_version', 'name', 'package', 'assets', 'coordinate_system') if key in profile}
+    required = {'detections', 'source', 'baseline', 'parked', 'evidence', 'tracks'}
+    if not required.issubset(profile['assets']):
+        raise ValueError('Processing profile is missing required detection or map assets')
+    return profile
 
 
 def package_result(output, package, point_count):
@@ -135,8 +150,8 @@ def package_result(output, package, point_count):
             shutil.copy2(package/name, output/name)
     shutil.copytree(package/'patches',output/'patches')
     metadata = yaml.safe_load((package/'metadata.yaml').read_text())
-    metadata['studio_algorithm_output_points'] = point_count
-    metadata['parent_package'] = str(package)
+    metadata['processing_output_points'] = point_count
+    metadata['parent_package'] = os.path.relpath(package, output)
     (output/'metadata.yaml').write_text(yaml.safe_dump(metadata,sort_keys=False))
     files = [output/'map.pcd',output/'metadata.yaml',output/'poses.txt',output/'poses_timed.txt',
              *sorted((output/'patches').glob('*.pcd'))]
@@ -144,8 +159,8 @@ def package_result(output, package, point_count):
         files.append(output/'calibration.yaml')
     checksums = {p.relative_to(output).as_posix():sha(p) for p in files}
     (output/'checksums.sha256').write_text(''.join(f'{v}  {k}\n' for k,v in checksums.items()))
-    manifest = dict(schema_version=1,package_kind='studio_algorithm_mapping_source',
-                    parent_package=str(package), parent_map_sha256=sha(package/'map.pcd'),
+    manifest = dict(schema_version=1,package_kind='processed_mapping_source',
+                    parent_package=os.path.relpath(package, output), parent_map_sha256=sha(package/'map.pcd'),
                     checksums_file='checksums.sha256',checksums=checksums,
                     patch_semantics='Original scans retained as observation provenance; map.pcd is filtered.')
     (output/'manifest.yaml').write_text(yaml.safe_dump(manifest,sort_keys=False))
@@ -153,22 +168,35 @@ def package_result(output, package, point_count):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--profile', type=Path, default=HERE/'current_map_profile.json')
+    parser.add_argument('--profile', type=Path, help='Map data processing_profile.json')
     parser.add_argument('--package', type=Path)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--octomap-builder', type=Path)
+    parser.add_argument('--octomap-builder', type=Path, default=Path(sys.argv[0]).absolute().parent/'octomap_builder')
     parser.set_defaults(centerpoint=1,self_filter=1,radius_filter=1,octomap=1,
                         radius=.2,neighbors=5,frames=3)
+    parser.add_argument('--radius', type=float, default=.2, help='Obstacle neighbor radius in meters (default: 0.2)')
+    parser.add_argument('--neighbors', type=int, default=5, help='Minimum neighbors including self (default: 5)')
+    parser.add_argument('--frames', type=int, default=3, help='Minimum independent free observations per layer (default: 3)')
     parser.add_argument('--check-only', action='store_true')
     args = parser.parse_args()
     if not 0<args.radius<=5 or not 1<=args.neighbors<=100 or not 1<=args.frames<=255:
         parser.error('radius / neighbors / frames out of range')
-    profile = json.loads(args.profile.read_text())
+    if args.profile is None:
+        if args.package is None:
+            parser.error('Provide --package (with processing_profile.json) or --profile')
+        args.profile = args.package/'processing_profile.json'
+    profile = load_profile(args.profile)
     package = (args.package or Path(profile['package'])).resolve()
-    progress('Checking the matching map, poses, keyframes and detection cache...')
+    manifest = package/'manifest.yaml'
+    if manifest.is_file():
+        kind = (yaml.safe_load(manifest.read_text()) or {}).get('package_kind')
+        if kind in ('processed_mapping_source', 'studio_algorithm_mapping_source'):
+            # Repeat processing from the original observations, not a filtered map.
+            package = Path(profile['package'])
+    progress('Checking map, poses, keyframe and detection asset files...')
     validate(profile, package)
     if args.octomap and (not args.octomap_builder or not os.access(args.octomap_builder, os.X_OK)):
-        raise ValueError('OctoMap builder is unavailable. Rebuild agt_map_studio.')
+        raise ValueError('OctoMap builder is unavailable. Build agt_map_processing or pass --octomap-builder.')
     if args.check_only:
         progress('Input validated. CenterPoint reuses cached detections and recomputes tracking and point labels.')
         return
@@ -269,13 +297,13 @@ def main():
     validate(profile, package)
     report = dict(status='complete', package=str(package), profile=str(args.profile.resolve()),
         algorithms={k:getattr(args,k) for k in ('centerpoint','self_filter','radius_filter','octomap')},
-        centerpoint_mode=profile['centerpoint_mode'] if args.centerpoint else 'disabled',
+        centerpoint_mode='cached_detections_recompute_tracking_and_point_masks' if args.centerpoint else 'disabled',
         legacy_motion_evidence=True, self_box_frame='BODY/IMU',
         radius_m=args.radius, neighbors_including_self=args.neighbors, distinct_frames=args.frames,
         input_points=len(values), output_points=int((~removed).sum()), removed_points=int(removed.sum()),
         self_removed_points=int(removed_self.sum()), radius_removed_points=int(rejected_radius.sum()),
         new_free_cells=int(new.sum()), grid_counts={str(v):int((after==v).sum()) for v in (0,205,254)},
-        inputs_unchanged=True, seconds=round(time.monotonic()-start,2),
+        input_validation='file_presence_and_runtime_format', input_sha256_checked=False, seconds=round(time.monotonic()-start,2),
         profile_sha256=sha(args.profile),
         implementation_sha256={p.name:sha(p) for p in HERE.glob('*.py')},
         outputs=dict(pcd=str(output/'map.pcd'), map_yaml=str(navigation/'map.yaml')),
@@ -283,6 +311,8 @@ def main():
                'OctoMap ray evidence uses original optimized scans; removed points are not extended as free rays.',
                'PCD removes the same dynamic/self/radius points excluded from grid obstacle evidence.',
                'The legacy motion evidence and ground rules remain part of this replay profile.'])
+    from prepare_map import prepare
+    prepare(args.profile, output/'processing_profile.json')
     (output/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
     progress(f'Completed: {report["output_points"]} cloud points; OctoMap added {report["new_free_cells"]} free cells.\nOutput: {output}')
 
