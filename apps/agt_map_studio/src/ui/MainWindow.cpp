@@ -426,6 +426,7 @@ void MainWindow::create_actions() {
       {"View", OccupancyInteractionMode::View, "Pan/zoom only"},
       {"Erase rect", OccupancyInteractionMode::Erase, "Drag: occupied -> free"},
       {"Obstacle line", OccupancyInteractionMode::Obstacle, "Drag a line of given width -> occupied"},
+      {"Free rect", OccupancyInteractionMode::FreeRectangle, "Drag: occupied and unknown -> free"},
       {"Free polygon", OccupancyInteractionMode::FreePolygon, "Click vertices, double-click: fill free"},
       {"Occupied polygon", OccupancyInteractionMode::OccupiedPolygon, "Click vertices, double-click: fill occupied"},
       {"Unknown polygon", OccupancyInteractionMode::UnknownPolygon, "Click vertices, double-click: fill unknown"},
@@ -1852,6 +1853,7 @@ void MainWindow::show_controls() {
           "2D view (Ctrl+2)\n"
           "  Left drag in View mode: pan; wheel: zoom; F: fit; R: reset\n"
           "  Erase rect: drag to clear occupied cells; Obstacle line: drag to mark obstacles\n"
+          "  Free rect: drag to fill occupied and unknown cells as free\n"
           "  Free/Occupied/Unknown polygon: click vertices; double-click/Enter: close; Backspace: undo vertex\n"
           "  Forbidden zone: export a keepout polygon without changing grid cells\n"
           "  Ctrl+S: Save 2D Map; Ctrl+Shift+S: Save 2D Map As\n\n"

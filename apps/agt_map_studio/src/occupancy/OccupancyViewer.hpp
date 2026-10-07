@@ -20,7 +20,8 @@ enum class OccupancyInteractionMode {
   Forbidden,
   FreePolygon,      // fill polygon -> free
   OccupiedPolygon,  // fill polygon -> occupied
-  UnknownPolygon    // fill polygon -> unknown
+  UnknownPolygon,   // fill polygon -> unknown
+  FreeRectangle    // drag rectangle -> free
 };
 
 inline bool occupancy_mode_uses_polygon(OccupancyInteractionMode mode) {

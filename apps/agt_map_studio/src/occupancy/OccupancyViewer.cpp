@@ -65,6 +65,7 @@ QString OccupancyViewer::mode_name(OccupancyInteractionMode mode) {
     case OccupancyInteractionMode::Erase: return QStringLiteral("Erase");
     case OccupancyInteractionMode::Obstacle: return QStringLiteral("Obstacle");
     case OccupancyInteractionMode::Forbidden: return QStringLiteral("Forbidden");
+    case OccupancyInteractionMode::FreeRectangle: return QStringLiteral("Free rectangle");
     case OccupancyInteractionMode::FreePolygon: return QStringLiteral("Free polygon");
     case OccupancyInteractionMode::OccupiedPolygon: return QStringLiteral("Occupied polygon");
     case OccupancyInteractionMode::UnknownPolygon: return QStringLiteral("Unknown polygon");
@@ -174,7 +175,12 @@ void OccupancyViewer::paintEvent(QPaintEvent *) {
     }
     painter.setPen(QPen(QColor(230, 30, 30, 230), 2, Qt::DashLine));
     painter.setBrush(QColor(230, 30, 30, 45));
-    if (mode_ == OccupancyInteractionMode::Erase && editing_drag_) {
+    if ((mode_ == OccupancyInteractionMode::Erase ||
+         mode_ == OccupancyInteractionMode::FreeRectangle) && editing_drag_) {
+      if (mode_ == OccupancyInteractionMode::FreeRectangle) {
+        painter.setPen(QPen(QColor(40, 170, 80, 230), 2, Qt::DashLine));
+        painter.setBrush(QColor(40, 170, 80, 45));
+      }
       painter.drawRect(QRect(edit_start_screen_, edit_current_screen_).normalized());
     } else if (mode_ == OccupancyInteractionMode::Obstacle && editing_drag_) {
       const double pixel_width = std::max(2.0, obstacle_width_m_ /
@@ -299,6 +305,16 @@ void OccupancyViewer::mouseReleaseEvent(QMouseEvent *event) {
                                      std::min(first.y, second.y),
                                      std::max(first.x, second.x),
                                      std::max(first.y, second.y));
+    } else if (valid && mode_ == OccupancyInteractionMode::FreeRectangle &&
+               first.x != second.x && first.y != second.y) {
+      const double min_x = std::min(first.x, second.x);
+      const double min_y = std::min(first.y, second.y);
+      const double max_x = std::max(first.x, second.x);
+      const double max_y = std::max(first.y, second.y);
+      emit fill_polygon_requested(
+          QVector<QPointF>{QPointF(min_x, min_y), QPointF(max_x, min_y),
+                          QPointF(max_x, max_y), QPointF(min_x, max_y)},
+          GridMap::kFree);
     } else if (valid && mode_ == OccupancyInteractionMode::Obstacle &&
                edit_start_screen_ != edit_current_screen_) {
       emit obstacle_line_requested(first.x, first.y, second.x, second.y,
