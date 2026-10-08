@@ -69,6 +69,19 @@ def refine_map_package(source_path: str | Path, refinement_path: str | Path,
         raise ValueError(f'unsupported pcd_format: {pcd_format}')
     rules = load_rules(rules_path)
     pcd = read_pcd(source / 'map.pcd')
+    removed_indices = set()
+    geometry_operations = []
+    source_digest = None
+    for operation in rules.operations:
+        if operation['type'] != 'remove_indices':
+            geometry_operations.append(operation)
+            continue
+        if source_digest is None:
+            source_digest = _sha256(source / 'map.pcd')
+        if (operation['source_sha256'] != source_digest
+                or operation['source_point_count'] != len(pcd.rows)):
+            raise ValueError('Exact deletion rules do not match the source PCD')
+        removed_indices.update(operation['indices'])
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix='.refined-', dir=str(destination.parent)))
     try:
@@ -79,8 +92,10 @@ def refine_map_package(source_path: str | Path, refinement_path: str | Path,
                     shutil.copytree(source_item, staging / name)
                 else:
                     shutil.copy2(source_item, staging / name)
-        filtered_rows = [row for row in pcd.rows if not point_is_removed(
-            float(row[pcd.x_index]), float(row[pcd.y_index]), float(row[pcd.z_index]), rules.operations)]
+        filtered_rows = [row for index, row in enumerate(pcd.rows)
+                         if index not in removed_indices and not point_is_removed(
+                             float(row[pcd.x_index]), float(row[pcd.y_index]),
+                             float(row[pcd.z_index]), geometry_operations)]
         refined = type(pcd)(pcd.header, pcd.fields, filtered_rows, pcd.source_format)
         written_format = write_pcd(staging / 'map.pcd', refined, pcd_format)
         shutil.copy2(rules_path, staging / 'refinement.yaml')

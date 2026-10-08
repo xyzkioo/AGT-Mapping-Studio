@@ -31,7 +31,7 @@ The current environment has Qt 5.15.3 rather than Qt6, so the CMake file uses
 Qt5 automatically and does not install anything.
 
 ```bash
-cd /home/yangxuan/ros2_ws
+cd ~/ros2_ws
 colcon build --base-paths src/agt_mapping_framework/apps/agt_map_studio \
   --packages-select agt_map_studio
 source install/setup.bash
@@ -41,7 +41,7 @@ source install/setup.bash
 
 ```bash
 ros2 run agt_map_studio map_viewer \
-  --pcd /home/yangxuan/ros2_ws/experiments/artifacts/output/mid360_20260901_205036/map_package/map.pcd
+  --pcd /path/to/map_package/map.pcd
 ```
 
 To display confidence or another scalar field produced by an external algorithm, store it as a numeric PCD field alongside `x y z`, then select it in the View menu or pass it on startup:
@@ -142,7 +142,7 @@ external tools. Studio does not run live mapping or subscribe to ROS topics.
 
 旧流程已复现：737,997 点；障碍 27,726、空闲 149,032、未知 928,720。完整局部地面方案已复现：737,997 点；障碍 30,619、空闲 219,553、未知 855,306。这些是现有数据的复现结果，不是动态去除或实车安全认证。
 
-本地构建位于 .studio-build/、.studio-install/，scripts/map_studio.sh 加载该 overlay；已有窗口需重启。当前输入位于 /home/xyzkioo/datasets/lizhi_navigation/AGT_荔枝园巡检建图项目/01_输入/map_package。没有兼容注册且未要求使用注册算法的点云可以走通用转换器；指定算法不可用时明确报错。
+本地构建位于 .studio-build/、.studio-install/，scripts/map_studio.sh 加载该 overlay；已有窗口需重启。当前输入位于 /path/to/map_package。没有兼容注册且未要求使用注册算法的点云可以走通用转换器；指定算法不可用时明确报错。
 
 执行器记录输入大小、修改时间、注册描述、实际参数和命令，用于过期判断，不计算输入内容 SHA256。历史结果缺少这些记录时沿用旧检查；保留大小和修改时间的内容变化无法由元数据检测。
 

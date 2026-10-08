@@ -3,7 +3,7 @@
 本文适用于当前工作区布局：
 
 ```text
-/home/yangxuan/ros2_ws/
+$ROS2_WS/
 ├── src/agt_mapping_framework/
 ├── build/、install/、log/
 └── build_mapping_framework/、install_mapping_framework/、log_mapping_framework/
@@ -16,7 +16,7 @@
 已有工作区推荐显式指定所有目录，避免在仓库目录执行 `colcon` 时误用 `agt_mapping_framework/build`：
 
 ```bash
-WS=/home/yangxuan/ros2_ws
+WS=$ROS2_WS
 REPO="$WS/src/agt_mapping_framework"
 
 cd "$WS"

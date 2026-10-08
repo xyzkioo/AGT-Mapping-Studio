@@ -81,6 +81,14 @@ class LaunchContractTests(unittest.TestCase):
             'lidar_topic': 'auto', 'imu_topic': 'auto', 'playback_rate': '1.0',
             'startup_timeout': '45', 'export_timeout': '180', 'drain_seconds': '3',
             'start_rviz': 'false', 'start_paused': 'false', 'auto_export': 'true', 'keep_open': 'false',
+            'self_filter_enabled': 'false', 'self_filter_frame': 'livox_frame',
+            'self_filter_size_x': '0', 'self_filter_size_y': '0', 'self_filter_size_z': '0',
+            'self_filter_offset_x': '0', 'self_filter_offset_y': '0', 'self_filter_offset_z': '0',
+            'self_filter_padding': '0.02',
+            'vehicle_return_filter_enabled': 'false',
+            'vehicle_return_box_min_x': '-0.82', 'vehicle_return_box_min_y': '-0.18',
+            'vehicle_return_box_min_z': '-0.10', 'vehicle_return_box_max_x': '-0.48',
+            'vehicle_return_box_max_y': '0.18', 'vehicle_return_box_max_z': '0.70',
         })
         share = Path(__file__).resolve().parents[1]
         replacements = {
@@ -88,7 +96,8 @@ class LaunchContractTests(unittest.TestCase):
             'ament_index_python.packages': module('ament_index_python.packages',
                 get_package_share_directory=lambda _: str(share)),
             'launch': module('launch'),
-            'launch.actions': module('launch.actions', EmitEvent=Emit, ExecuteProcess=Process,
+            'launch.actions': module('launch.actions', DeclareLaunchArgument=Action,
+                EmitEvent=Emit, ExecuteProcess=Process,
                 LogInfo=Action, OpaqueFunction=Failure, RegisterEventHandler=Registration),
             'launch.event_handlers': module('launch.event_handlers',
                 OnProcessExit=ProcessExit, OnShutdown=ShutdownHandler),
@@ -189,6 +198,29 @@ class LaunchContractTests(unittest.TestCase):
         lio = next(a for a in actions if isinstance(a, Node) and a.kwargs.get('executable') == 'lio_node')
         self.assertIn(('/agt/sensors/imu/data', '/livox/imu'), lio.kwargs['remappings'])
         self.assertNotIn('imu_topic', lio.kwargs['parameters'][0])
+
+    def test_vehicle_filter_is_before_adapter_and_keeps_raw_bag_topic(self):
+        actions = self.compose(vehicle_return_filter_enabled='true')
+        nodes = [action for action in actions if isinstance(action, Node)]
+        filter_node = next(node for node in nodes if
+                           node.kwargs.get('executable') == 'livox_self_return_filter_node')
+        adapter = next(node for node in nodes if
+                       node.kwargs.get('executable') == 'mid360_adapter_node')
+        self.assertLess(nodes.index(filter_node), nodes.index(adapter))
+        self.assertEqual(filter_node.kwargs['parameters'][0]['input_topic'], '/livox/lidar')
+        self.assertEqual(adapter.kwargs['parameters'][0]['input_topic'],
+                         '/mapping/sensor/livox_prefiltered')
+        ready = next(node for node in nodes if node.kwargs.get('executable') == 'mapping_wait_ready')
+        self.assertEqual(ready.kwargs['parameters'][0]['lidar_prefilter_topic'],
+                         '/mapping/sensor/livox_prefiltered')
+        following = self.callback('mapping_wait_ready')(self.event(0), self.context)
+        player = next(action for action in following if isinstance(action, Process))
+        self.assertIn('/livox/lidar', player.kwargs['cmd'])
+
+    def test_two_self_filter_modes_are_mutually_exclusive(self):
+        with self.assertRaisesRegex(ValueError, 'either robot self filter or vehicle return filter'):
+            self.compose(vehicle_return_filter_enabled='true', self_filter_enabled='true',
+                         self_filter_size_x='1', self_filter_size_y='1', self_filter_size_z='1')
 
     def test_paused_and_rate_are_forwarded_to_player_argv(self):
         self.compose(start_paused='true', playback_rate='2.5')

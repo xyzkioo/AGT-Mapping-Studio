@@ -26,6 +26,9 @@ from .live_source import inspect_live_config
 from .preflight import frontend_remappings, parse_bool, validate_number
 from .session_launch import _raise_launch_error
 from .session_lock import acquire_domain_lease
+from .self_filter_launch import (
+    VEHICLE_RETURN_TOPIC, adapter_parameters, read_self_filter_settings,
+    read_vehicle_return_settings, self_filter_nodes, vehicle_return_nodes)
 from .session_state import create_session, mark_session
 
 
@@ -73,14 +76,25 @@ def launch_live_session(context):
     share = Path(get_package_share_directory('agt_mapping_bringup'))
     lio_config = share / 'config' / 'fastlio2_mid360.yaml'
     remappings = frontend_remappings(lio_config, source.imu_topic)
+    filter_settings = read_self_filter_settings(context)
+    vehicle_settings = read_vehicle_return_settings(context)
+    if filter_settings.enabled and vehicle_settings.enabled:
+        raise ValueError('Select either robot self filter or vehicle return filter, not both')
     text = lambda v: ParameterValue(str(v), value_type=str)
     driver = Node(package='livox_ros_driver2', executable='livox_ros_driver2_node',
                   name='livox_lidar_publisher', output='screen',
                   parameters=livox_driver_parameters(source.path, source.publish_freq, options['frame_id']))
+    adapter = Node(package='agt_mid360_adapter', executable='mid360_adapter_node',
+                   parameters=[adapter_parameters(
+                       VEHICLE_RETURN_TOPIC if vehicle_settings.enabled else source.lidar_topic,
+                       filter_settings)])
+    filter_nodes = self_filter_nodes(filter_settings, False)
+    vehicle_nodes = vehicle_return_nodes(vehicle_settings, source.lidar_topic, False)
     nodes = [
         driver,
-        Node(package='agt_mid360_adapter', executable='mid360_adapter_node',
-             parameters=[{'input_topic': source.lidar_topic}]),
+        *vehicle_nodes,
+        adapter,
+        *filter_nodes,
         Node(package='fastlio2', namespace='fastlio2', executable='lio_node',
              parameters=[{'config_path': text(lio_config), 'use_sim_time': False}],
              remappings=remappings),
@@ -94,13 +108,18 @@ def launch_live_session(context):
         Node(package='agt_mapping_exporter', executable='mapping_artifact_exporter',
              parameters=[{'use_sim_time': False, 'output_dir': text(output)}]),
     ]
-    labels = ['Livox driver', 'sensor adapter', 'FAST-LIO2', 'frontend bridge', 'PGO', 'PGO bridge',
-              'artifact exporter']
+    labels = ['Livox driver', 'sensor adapter']
+    if vehicle_settings.enabled:
+        labels.insert(1, 'Livox vehicle return filter')
+    if filter_settings.enabled:
+        labels += ['robot self filter', 'Livox self-filter bridge']
+    labels += ['FAST-LIO2', 'frontend bridge', 'PGO', 'PGO bridge', 'artifact exporter']
     recorder = ExecuteProcess(cmd=raw_record_command(output, source.lidar_topic, source.imu_topic),
                               output='screen')
     ready = Node(package='agt_mapping_bringup', executable='mapping_wait_ready', output='screen',
                  parameters=[{'output_dir': text(output), 'startup_timeout': options['startup_timeout'],
                               'lidar_topic': source.lidar_topic, 'imu_topic': source.imu_topic,
+                              'lidar_prefilter_topic': VEHICLE_RETURN_TOPIC if vehicle_settings.enabled else '',
                               'require_publishers': True}])
     supervisor = Node(package='agt_mapping_bringup', executable='mapping_live_supervisor', output='screen',
                       parameters=[{'output_dir': text(output),

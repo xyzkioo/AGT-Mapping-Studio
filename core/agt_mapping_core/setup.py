@@ -13,7 +13,7 @@ setup(
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='AGT Mapping Team',
-    maintainer_email='xuanyang.robotics@gmail.com',
+    maintainer_email='',
     description='Backend-neutral mapping session and pipeline coordination boundary.',
     license='Apache-2.0',
 )

@@ -152,6 +152,19 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(self.record()['status'], 'ready')
         self.assertEqual(self.node.client.called, 0)
 
+    def test_vehicle_filter_graph_opens_readiness_gate(self):
+        self.node.params['lidar_prefilter_topic'] = '/mapping/sensor/livox_prefiltered'
+        self.node.graph['/livox/lidar'] = ['livox_self_return_filter_node']
+        self.node.graph['/mapping/sensor/livox_prefiltered'] = ['mid360_adapter_node']
+        runtime._wait_ready(self.rclpy, self.node, self.output)
+        self.assertEqual(self.record()['status'], 'ready')
+
+    def test_vehicle_filter_requires_adapter_on_filtered_topic(self):
+        self.node.params['lidar_prefilter_topic'] = '/mapping/sensor/livox_prefiltered'
+        self.node.graph['/livox/lidar'] = ['livox_self_return_filter_node']
+        with self.assertRaisesRegex(TimeoutError, '/mapping/sensor/livox_prefiltered'):
+            runtime._wait_ready(self.rclpy, self.node, self.output)
+
     def test_missing_imu_consumer_times_out_with_topic_diagnostic(self):
         self.node.graph['/livox/imu'] = []
         with self.assertRaisesRegex(TimeoutError, '/livox/imu'):

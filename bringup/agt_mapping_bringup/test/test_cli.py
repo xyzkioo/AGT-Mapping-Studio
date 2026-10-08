@@ -61,6 +61,17 @@ class CliTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
         self.assertEqual((self.bag / 'metadata.yaml').read_bytes(), before)
 
+    def test_vehicle_return_filter_plan_is_opt_in_and_keeps_input_bag(self):
+        before = (self.bag / 'metadata.yaml').read_bytes()
+        code, output, errors = self.invoke(['--dry-run', '--vehicle-return-filter'])
+        self.assertEqual((code, errors), (0, ''))
+        command = json.loads(output)['command']
+        self.assertIn('vehicle_return_filter_enabled:=true', command)
+        self.assertIn('vehicle_return_box_min_x:=-0.82', command)
+        self.assertIn('lidar_topic:=/livox/lidar', command)
+        self.assertEqual((self.bag / 'metadata.yaml').read_bytes(), before)
+        self.assertFalse(self.output.exists())
+
     def test_pause_manual_and_keep_open_are_explicit(self):
         code, output, _ = self.invoke(['--dry-run', '--start-paused', '--manual-export', '--keep-open'])
         self.assertEqual(code, 0)

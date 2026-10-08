@@ -45,6 +45,7 @@ public:
   bool open_mapping_package(const QString &directory, QString *error = nullptr);
   bool open_occupancy_map(const QString &path, QString *error = nullptr);
   bool save_occupancy_map(const QString &directory, QString *error = nullptr);
+  bool save_session(QString *error = nullptr);
   bool open_session(const QString &session_file, QString *error = nullptr);
   // Lightweight post-mapping review: keep the PCD as provenance, but load
   // only the generated 2D map into the UI.
@@ -122,6 +123,7 @@ private:
   QString stamp() const;
   bool ensure_work_dir(QString *error);
   bool tools_available(const QStringList &required, QString *missing) const;
+  QString tool_input_snapshot() const;
   void run_tool(const ToolInvocation &invocation, std::function<void(const ToolResult &)> on_done);
   void continue_queue();
   void fail_queue(const QString &message);
@@ -130,7 +132,8 @@ private:
   bool write_pipeline_config(QString *error) const;
   void save_session_quietly();
   bool run_mapping_algorithms();
-  bool protect_unsaved_edits();
+  bool protect_unsaved_edits(bool *discarded = nullptr);
+  bool activate_pcd(const QString &path, LoadedPointCloud loaded, QString *error);
   bool save_2d_interactively(bool choose_directory);
   bool has_unsaved_2d_edits() const;
 

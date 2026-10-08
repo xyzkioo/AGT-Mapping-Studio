@@ -3,7 +3,7 @@
   <name>agt_pgo_backend</name>
   <version>0.1.0</version>
   <description>External PGO integration bridge for the AGT mapping backend contract.</description>
-  <maintainer email="xuanyang.robotics@gmail.com">AGT Mapping Team</maintainer>
+  <maintainer>AGT Mapping Team</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rclcpp</depend>

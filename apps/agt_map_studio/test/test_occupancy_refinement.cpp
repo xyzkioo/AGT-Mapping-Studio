@@ -148,3 +148,23 @@ TEST(RefinementModelTest, RefinementRoundTripAndExport) {
 
 }  // namespace
 }  // namespace agt_map_studio
+
+TEST(RefinementExportRegression, AllCellClassesSurviveCustomNegateAndThresholds) {
+  using namespace agt_map_studio;
+  for (int kind = 0; kind < 3; ++kind) {
+    GridMap map; std::string error;
+    ASSERT_TRUE(map.set_geometry(3, 1, 1., 0., 0., &error));
+    map.cells() = {GridMap::kOccupied, GridMap::kFree, GridMap::kUnknown};
+    MapYamlMetadata metadata; metadata.negate = kind == 1;
+    if (kind == 2) metadata.free_thresh = .4;
+    RefinementModel model; model.set_base_map(map, metadata);
+    auto directory = std::filesystem::temp_directory_path() /
+                     ("agt_trinary_export_test_" + std::to_string(kind));
+    ASSERT_TRUE(model.export_navigation_map(directory.string(), &error)) << error;
+    GridMap reloaded; MapYamlMetadata output;
+    ASSERT_TRUE(MapYamlLoader::load((directory / "map.yaml").string(), &reloaded, &output, &error)) << error;
+    EXPECT_EQ(reloaded.cells(), map.cells());
+    EXPECT_FALSE(output.negate); EXPECT_EQ(output.mode, "trinary");
+    std::filesystem::remove_all(directory);
+  }
+}

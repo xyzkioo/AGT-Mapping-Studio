@@ -1,12 +1,15 @@
 #include "selection/SelectionManager.h"
 
 #include <QTemporaryDir>
+#include <QFile>
+#include <yaml-cpp/yaml.h>
 
 #include <gtest/gtest.h>
 
 #include <pcl/io/pcd_io.h>
 
 #include <cstring>
+#include <fstream>
 
 namespace agt_map_studio {
 
@@ -86,6 +89,78 @@ TEST(SelectionManagerTest, ExportKeepsOriginalPclFields) {
   ASSERT_TRUE(clean.source);
   ASSERT_EQ(clean.source->fields.size(), 4U);
   EXPECT_EQ(clean.source->fields[3].name, "intensity");
+}
+
+
+TEST(SelectionManagerTest, SessionRestoresCommandsAndRejectsWrongSourceTransactionally) {
+  QTemporaryDir temporary;
+  SelectionManager manager; manager.reset(4);
+  SelectionGeometry sphere; sphere.rule_type = "remove_sphere";
+  sphere.center = Eigen::Vector3d(10, 20, 30); sphere.radius = 2;
+  manager.select_points({0, 0}, sphere);
+  ASSERT_EQ(manager.selected_count(), 1U);
+  ASSERT_TRUE(manager.delete_selected());
+  manager.select_points({2}, sphere); ASSERT_TRUE(manager.delete_selected());
+  ASSERT_TRUE(manager.undo());
+  EXPECT_EQ(manager.selection_geometry().rule_type, "remove_sphere");
+  QString error;
+  const auto path = temporary.filePath("state.yaml");
+  ASSERT_TRUE(manager.save_state(path, "source-digest", &error)) << error.toStdString();
+  SelectionManager restored;
+  ASSERT_TRUE(restored.load_state(path, "source-digest", 4, &error)) << error.toStdString();
+  EXPECT_EQ(restored.statuses(), manager.statuses());
+  EXPECT_EQ(restored.active_fingerprint(), manager.active_fingerprint());
+  EXPECT_EQ(restored.selection_geometry().center, sphere.center);
+  ASSERT_TRUE(restored.redo()); EXPECT_EQ(restored.deleted_count(), 2U);
+  ASSERT_TRUE(restored.undo()); ASSERT_TRUE(restored.undo()); EXPECT_EQ(restored.deleted_count(), 0U);
+  ASSERT_TRUE(restored.delete_selected());
+  EXPECT_EQ(restored.history().back().geometry.center, sphere.center);
+  const auto fingerprint = restored.active_fingerprint();
+  EXPECT_FALSE(restored.load_state(path, "wrong-source", 4, &error));
+  EXPECT_EQ(restored.active_fingerprint(), fingerprint);
+  auto corrupt = YAML::LoadFile(path.toStdString());
+  corrupt["history"][0]["indices"] = std::vector<std::size_t>{999};
+  std::ofstream stream(path.toStdString()); stream << corrupt; stream.close();
+  EXPECT_FALSE(restored.load_state(path, "source-digest", 4, &error));
+  EXPECT_EQ(restored.active_fingerprint(), fingerprint);
+}
+
+TEST(SelectionManagerTest, FingerprintIncludesExactPointsAndGeometry) {
+  SelectionManager a, b, c; a.reset(2); b.reset(2); c.reset(2);
+  SelectionGeometry sphere; sphere.rule_type = "remove_sphere";
+  sphere.radius = 1.; sphere.center = Eigen::Vector3d(10, 0, 0);
+  a.select_points({0}, sphere); ASSERT_TRUE(a.delete_selected());
+  b.select_points({1}, sphere); ASSERT_TRUE(b.delete_selected());
+  sphere.center.x() = 20.;
+  c.select_points({0}, sphere); ASSERT_TRUE(c.delete_selected());
+  EXPECT_NE(a.active_fingerprint(), b.active_fingerprint());
+  EXPECT_NE(a.active_fingerprint(), c.active_fingerprint());
+  ASSERT_TRUE(c.undo()); EXPECT_TRUE(c.active_fingerprint().isEmpty());
+}
+
+TEST(SelectionManagerTest, ExactRulesKeepSourceRowIdentityAcrossNonfinitePointsAndInverseSelection) {
+  QTemporaryDir temporary;
+  const QString input = temporary.filePath("input.pcd");
+  QFile file(input); ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+  file.write("VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\nWIDTH 4\nHEIGHT 1\nPOINTS 4\nDATA ascii\n0 0 0\nnan 0 0\n1 0 0\n2 0 0\n"); file.close();
+  LoadedPointCloud cloud; std::string detail;
+  ASSERT_TRUE(PCDLoader::load(input.toStdString(), &cloud, &detail)) << detail;
+  ASSERT_EQ(cloud.point_count(), 3U);
+  SelectionManager manager; manager.reset(cloud.point_count());
+  manager.select_points({1}, AxisAlignedBoundingBox()); manager.invert_selection();
+  ASSERT_TRUE(manager.delete_selected());
+  QString error; const QString path = temporary.filePath("rules.yaml");
+  ASSERT_TRUE(manager.write_refinement_rules(path, input, &error, &cloud)) << error.toStdString();
+  auto rule = YAML::LoadFile(path.toStdString())["operations"][0];
+  EXPECT_EQ(rule["type"].as<std::string>(), "remove_indices");
+  EXPECT_EQ(rule["indices"].as<std::vector<std::size_t>>(), (std::vector<std::size_t>{0, 3}));
+  EXPECT_EQ(rule["source_point_count"].as<std::size_t>(), 4U);
+  EXPECT_EQ(rule["source_sha256"].as<std::string>().size(), 64U);
+  manager.bind_source_sha256(QString::fromStdString(rule["source_sha256"].as<std::string>()));
+  ASSERT_TRUE(file.open(QIODevice::Append)); file.write("\n"); file.close();
+  EXPECT_FALSE(manager.write_refinement_rules(path, input, &error, &cloud));
+  EXPECT_EQ(YAML::LoadFile(path.toStdString())["operations"][0]["indices"].as<std::vector<std::size_t>>(),
+            (std::vector<std::size_t>{0, 3}));
 }
 
 }  // namespace agt_map_studio

@@ -19,7 +19,7 @@
 | 项目 | 已核实结果 |
 | --- | --- |
 | MCP 执行环境 | Docker，Ubuntu 24.04.5，Python 3.12；不含 ROS 运行时 |
-| 共享目录 | `/home/yangxuan/ros2_ws`，容器内是可写的宿主 ext4 挂载 |
+| 共享目录 | `$ROS2_WS`，容器内是可写的宿主 ext4 挂载 |
 | 宿主机 | Ubuntu 22.04.5，Python 3.10.12，ROS 2 Humble |
 | 宿主工具 | colcon、CMake、g++、rclpy、launch、rosbag2_py、PyYAML、pytest 可用 |
 | 宿主入口 | 本机 SSH，经用户核对指纹并在 ShunCode 终端输入密码认证 |
@@ -148,7 +148,7 @@ experiments/data/rosbag/bunker_mid360_mapping_20260901_205036
 以下命令必须在宿主机 22.04 终端执行，或使用已授权的宿主机执行会话，不能直接在缺 ROS 的 MCP 容器内运行：
 
 ```bash
-WS=/home/yangxuan/ros2_ws
+WS=$ROS2_WS
 TEST="$WS/experiments/mcp_host_mapping_validation/20260920_082032_d2e0a6"
 cd "$WS/src/agt_mapping_framework"
 

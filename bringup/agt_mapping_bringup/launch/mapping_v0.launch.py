@@ -2,6 +2,9 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 
+from agt_mapping_bringup.self_filter_launch import (
+    declare_self_filter_arguments, declare_vehicle_return_arguments)
+
 from agt_mapping_bringup.session_launch import launch_session
 
 
@@ -20,4 +23,6 @@ def generate_launch_description():
         DeclareLaunchArgument('export_timeout', default_value='180.0'),
         DeclareLaunchArgument('drain_seconds', default_value='3.0'),
     ]
+    arguments += declare_self_filter_arguments()
+    arguments += declare_vehicle_return_arguments()
     return LaunchDescription(arguments + [OpaqueFunction(function=launch_session)])

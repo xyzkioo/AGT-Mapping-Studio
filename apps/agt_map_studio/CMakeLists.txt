@@ -90,6 +90,8 @@ if(BUILD_TESTING)
     add_test(NAME test_navigation_algorithms_smoke COMMAND navigation_algorithms_smoke)
     set_tests_properties(test_navigation_algorithms_smoke PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
       TIMEOUT 70)
+    add_test(NAME test_edit_persistence_and_async_guard COMMAND navigation_algorithms_smoke --check-edit-persistence)
+    set_tests_properties(test_edit_persistence_and_async_guard PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
     add_test(NAME test_standalone_2d_workflow COMMAND navigation_algorithms_smoke --check-2d)
     set_tests_properties(test_standalone_2d_workflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     add_test(NAME test_xy_linked_inspection COMMAND navigation_algorithms_smoke --check-xy-link)

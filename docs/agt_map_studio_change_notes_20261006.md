@@ -2,7 +2,7 @@
 
 修改日期：2026-10-06  
 对象：AGT Map Studio 二维地图编辑、保存及工作流状态管理  
-工作仓库：`/home/xyzkioo/ros2_workspace/src/agt-lio-pgo-mapping`
+工作仓库：`$REPO_ROOT`
 
 ## 一、修改背景
 

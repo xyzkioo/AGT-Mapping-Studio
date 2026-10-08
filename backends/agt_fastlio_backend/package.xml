@@ -3,7 +3,7 @@
   <name>agt_fastlio_backend</name>
   <version>0.1.0</version>
   <description>FAST-LIO2 output adapter for the AGT mapping frontend contract.</description>
-  <maintainer email="xuanyang.robotics@gmail.com">AGT Mapping Team</maintainer>
+  <maintainer>AGT Mapping Team</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rclcpp</depend>

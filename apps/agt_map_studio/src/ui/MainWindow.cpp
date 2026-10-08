@@ -26,7 +26,9 @@
 #include <QDockWidget>
 #include <QDoubleSpinBox>
 #include "ui/StudioFileDialog.hpp"
+#include <QFile>
 #include <QFileInfo>
+#include <QUuid>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QFormLayout>
@@ -153,7 +155,7 @@ void MainWindow::create_actions() {
     if (refinement_model_.has_map() && !save_2d_interactively(false)) return;
     if (session_.empty()) return;
     QString error;
-    if (!ensure_work_dir(&error) || !session_.save(&error)) {
+    if (!save_session(&error)) {
       QMessageBox::critical(this, QStringLiteral("Save Session failed"), error);
       return;
     }
@@ -643,6 +645,10 @@ bool MainWindow::open_pcd(const QString &path, QString *error) {
     if (error) *error = QString::fromStdString(loader_error);
     return false;
   }
+  return activate_pcd(path, std::move(loaded), error);
+}
+
+bool MainWindow::activate_pcd(const QString &path, LoadedPointCloud loaded, QString *error) {
   if (!protect_unsaved_edits()) {
     if (error) *error = QStringLiteral("Switch cancelled. Current edits preserved.");
     return false;
@@ -663,6 +669,7 @@ bool MainWindow::open_pcd(const QString &path, QString *error) {
   z_min_spin_->setValue(viewer_->cloud().min_bound.z());
   z_max_spin_->setValue(viewer_->cloud().max_bound.z());
   set_source(path, QString());
+  selection_manager_.bind_source_sha256(session_.source_pcd_sha256());
   statusBar()->showMessage(viewer_->stats_text());
   return true;
 }
@@ -913,7 +920,58 @@ bool MainWindow::open_mapping_review(const QString &package_dir, const QString &
 bool MainWindow::open_session(const QString &session_file, QString *error) {
   WorkflowSession restored;
   if (!restored.load(session_file, error)) return false;
-  if (!open_pcd(restored.source_pcd(), error)) return false;
+  const QString digest = WorkflowSession::sha256_file(restored.source_pcd());
+  if (digest.isEmpty() || digest != restored.source_pcd_sha256()) {
+    if (error) *error = QStringLiteral("Session source PCD is missing or has changed; current edits preserved.");
+    return false;
+  }
+  LoadedPointCloud probe;
+  std::string detail;
+  if (!PCDLoader::load(restored.source_pcd().toStdString(), &probe, &detail)) {
+    if (error) *error = QString::fromStdString(detail);
+    return false;
+  }
+  SelectionManager edits;
+  edits.reset(probe.point_count());
+  if (!restored.editor_3d_path().isEmpty()) {
+    if (!edits.load_state(restored.editor_3d_path(), digest, probe.point_count(), error)) return false;
+    if (edits.active_fingerprint() != restored.refinement_fingerprint()) {
+      if (error) *error = QStringLiteral("Session and 3D editing state do not match.");
+      return false;
+    }
+  } else if (restored.has_3d_edits()) {
+    if (error) *error = QStringLiteral("This legacy session contains 3D edits but no exact edit state. Restore from the exported refined PCD instead.");
+    return false;
+  }
+  QString navigation = restored.effective_navigation_dir();
+  if (navigation.isEmpty()) navigation = restored.record(WorkflowSession::Navigation).path;
+  if (!restored.editor_map_path().isEmpty()) navigation = QFileInfo(restored.editor_map_path()).absolutePath();
+  if (!navigation.isEmpty() &&
+      (QFileInfo::exists(QDir(navigation).filePath("map.yaml")) || !restored.editor_map_path().isEmpty())) {
+    GridMap map; MapYamlMetadata metadata;
+    if (!MapYamlLoader::load(QDir(navigation).filePath("map.yaml").toStdString(), &map, &metadata, &detail)) {
+      if (error) *error = QString::fromStdString(detail);
+      return false;
+    }
+    const QString history = QDir(navigation).filePath("map_refinement.yaml");
+    if (QFileInfo::exists(history)) {
+      RefinementModel candidate; candidate.set_base_map(map, metadata);
+      if (!candidate.load_refinement_yaml(history.toStdString(), &detail)) {
+        if (error) *error = QString::fromStdString(detail);
+        return false;
+      }
+      for (std::size_t i = 0; i < map.cells().size(); ++i) {
+        if (candidate.effective_at_index(i) != map.cells()[i]) {
+          if (error) *error = QStringLiteral("Edit history does not match the 2D map.");
+          return false;
+        }
+      }
+    }
+  }
+  if (!activate_pcd(restored.source_pcd(), std::move(probe), error)) return false;
+  selection_manager_ = std::move(edits);
+  saved_3d_fingerprint_ = selection_manager_.active_fingerprint();
+  viewer_->mark_edit_state_dirty();
   const PublishTarget target = restored.publish_target();
   const ConverterParameters converter = restored.converter();
   session_ = restored;
@@ -921,10 +979,6 @@ bool MainWindow::open_session(const QString &session_file, QString *error) {
   session_.publish_target() = target;
   workflow_panel_->set_converter(converter);
   workflow_panel_->set_publish_target(target);
-  QString navigation = session_.effective_navigation_dir().isEmpty()
-                                 ? session_.record(WorkflowSession::Navigation).path
-                                 : session_.effective_navigation_dir();
-  if (!session_.editor_map_path().isEmpty()) navigation = QFileInfo(session_.editor_map_path()).absolutePath();
   if (!navigation.isEmpty() && QFileInfo::exists(QDir(navigation).filePath(QStringLiteral("map.yaml")))) {
     QString map_error;
     if (!load_navigation_dir_into_2d(navigation, &map_error)) {
@@ -1002,7 +1056,7 @@ void MainWindow::export_refinement_rules_dialog() {
       QStringLiteral("YAML (*.yaml *.yml)"));
   if (path.isEmpty()) return;
   QString error;
-  if (!selection_manager_.write_refinement_rules(path, source_path_, &error)) {
+  if (!selection_manager_.write_refinement_rules(path, source_path_, &error, &viewer_->cloud())) {
     QMessageBox::critical(this, QStringLiteral("Export failed"), error);
     return;
   }
@@ -1180,26 +1234,28 @@ bool MainWindow::save_2d_interactively(bool choose_directory) {
 void MainWindow::save_2d_map_dialog() { save_2d_interactively(false); }
 void MainWindow::save_2d_map_as_dialog() { save_2d_interactively(true); }
 
-bool MainWindow::protect_unsaved_edits() {
+bool MainWindow::protect_unsaved_edits(bool *discarded) {
+  if (discarded) *discarded = false;
   if (tool_runner_.is_running()) {
     QMessageBox::information(this, QStringLiteral("Processing"), QStringLiteral("Wait for the task to finish or cancel it before switching maps."));
     return false;
   }
-  const bool dirty_3d = selection_manager_.has_active_deletes() &&
-      session_.state(WorkflowSession::Refine) != StageState::Fresh &&
-      saved_3d_fingerprint_ != selection_manager_.active_fingerprint();
+  const bool dirty_3d = saved_3d_fingerprint_ != selection_manager_.active_fingerprint();
   if (!has_unsaved_2d_edits() && !dirty_3d) return true;
   const auto answer = QMessageBox::question(this, QStringLiteral("Unsaved edits"),
       QStringLiteral("Save current edits before continuing?"),
       QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
   if (answer == QMessageBox::Cancel) return false;
-  if (answer == QMessageBox::Discard) return true;
+  if (answer == QMessageBox::Discard) {
+    if (discarded) *discarded = true;
+    return true;
+  }
   if (has_unsaved_2d_edits() && !save_2d_interactively(false)) return false;
   if (dirty_3d) {
     QString error;
     if (!ensure_work_dir(&error) ||
-        !selection_manager_.write_refinement_rules(session_.refinement_rules_path(), session_.source_pcd(), &error) ||
-        !session_.save(&error)) {
+        !selection_manager_.write_refinement_rules(session_.refinement_rules_path(), session_.source_pcd(), &error, &viewer_->cloud()) ||
+        !save_session(&error)) {
       QMessageBox::critical(this, QStringLiteral("Save failed; edits preserved"), error);
       return false;
     }
@@ -1606,6 +1662,25 @@ bool MainWindow::tools_available(const QStringList &required, QString *missing) 
   return true;
 }
 
+QString MainWindow::tool_input_snapshot() const {
+  QJsonObject state;
+  state["source"] = session_.source_pcd();
+  const QFileInfo source(session_.source_pcd());
+  state["source_size"] = QString::number(source.size());
+  state["source_modified"] = source.lastModified().toString(Qt::ISODateWithMs);
+  state["3d"] = selection_manager_.active_fingerprint();
+  state["2d"] = QString::fromStdString(refinement_model_.active_fingerprint());
+  state["converter"] = session_.converter().fingerprint();
+  state["editor_map"] = session_.editor_map_path();
+  const auto &target = session_.publish_target();
+  state["publish_root"] = target.map_root; state["publish_id"] = target.map_id;
+  state["publish_version"] = target.map_version; state["activate"] = target.activate;
+  for (const auto stage : {WorkflowSession::Refine, WorkflowSession::Relocalization,
+                           WorkflowSession::Navigation, WorkflowSession::Patch, WorkflowSession::Publish})
+    state[WorkflowSession::stage_name(stage)] = session_.expected_input_fingerprint(stage);
+  return QString::fromUtf8(QJsonDocument(state).toJson(QJsonDocument::Compact));
+}
+
 void MainWindow::run_tool(const ToolInvocation &invocation, std::function<void(const ToolResult &)> on_done) {
   if (tool_runner_.is_running()) {
     QMessageBox::information(this, QStringLiteral("Busy"), QStringLiteral("Another tool is still running."));
@@ -1613,7 +1688,14 @@ void MainWindow::run_tool(const ToolInvocation &invocation, std::function<void(c
   }
   ToolInvocation prepared = invocation;
   prepared.log_path = session_.log_path();
-  tool_callback_ = std::move(on_done);
+  const QString snapshot = tool_input_snapshot();
+  tool_callback_ = [this, snapshot, on_done = std::move(on_done)](const ToolResult &result) {
+    if (snapshot != tool_input_snapshot()) {
+      fail_queue(QStringLiteral("Inputs changed while the task was running. The result was not accepted; current edits are preserved. Run the step again to use the latest inputs."));
+      return;
+    }
+    on_done(result);
+  };
   tool_runner_.start(prepared);
 }
 
@@ -1623,9 +1705,34 @@ void MainWindow::cancel_tool() {
   tool_runner_.cancel();
 }
 
+bool MainWindow::save_session(QString *error) {
+  if (!ensure_work_dir(error)) return false;
+  sync_edit_fingerprints();
+  if (review_mode_) {
+    session_.set_editor_3d_path(QString());
+    return session_.save(error);
+  }
+  // A unique sidecar lets the old session remain valid if saving the descriptor fails.
+  const QString state_path = QDir(session_.work_dir()).filePath(
+      "edits_3d_" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".yaml");
+  if (!selection_manager_.save_state(state_path, session_.source_pcd_sha256(), error)) return false;
+  const QString previous = session_.editor_3d_path();
+  session_.set_editor_3d_path(state_path);
+  if (!session_.save(error)) {
+    session_.set_editor_3d_path(previous);
+    QFile::remove(state_path);
+    return false;
+  }
+  saved_3d_fingerprint_ = selection_manager_.active_fingerprint();
+  // Only remove our previous sidecar after the new descriptor is committed.
+  if (QFileInfo(previous).absolutePath() == session_.work_dir() &&
+      QFileInfo(previous).fileName().startsWith("edits_3d_")) QFile::remove(previous);
+  return true;
+}
+
 void MainWindow::save_session_quietly() {
   QString error;
-  if (!session_.save(&error)) statusBar()->showMessage(QStringLiteral("Session not saved: %1").arg(error), 5000);
+  if (!save_session(&error)) statusBar()->showMessage(QStringLiteral("Session not saved: %1").arg(error), 5000);
 }
 
 void MainWindow::continue_queue() {
@@ -1686,7 +1793,7 @@ void MainWindow::run_refine() {
     statusBar()->showMessage(QStringLiteral("No 3D deletions to apply"), 4000);
     return continue_queue();
   }
-  if (!selection_manager_.write_refinement_rules(session_.refinement_rules_path(), session_.source_pcd(), &error)) {
+  if (!selection_manager_.write_refinement_rules(session_.refinement_rules_path(), session_.source_pcd(), &error, &viewer_->cloud())) {
     return fail_queue(error);
   }
   const QString output = QDir(session_.work_dir()).filePath(QStringLiteral("refined_mapping_source_%1").arg(stamp()));
@@ -2039,8 +2146,9 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     }
     cancel_tool();
   }
-  if (!protect_unsaved_edits()) { event->ignore(); return; }
-  if (!session_.empty()) save_session_quietly();
+  bool discarded = false;
+  if (!protect_unsaved_edits(&discarded)) { event->ignore(); return; }
+  if (!discarded && !session_.empty()) save_session_quietly();
   QMainWindow::closeEvent(event);
 }
 

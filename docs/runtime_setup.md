@@ -26,7 +26,7 @@ colcon --log-base log_mapping_framework build \
 本轮已构建的独立测试安装可直接使用，无需覆盖现有安装：
 
 ```bash
-WS=/home/yangxuan/ros2_ws
+WS=$ROS2_WS
 TEST_SETUP="$WS/experiments/mcp_host_mapping_validation/20260920_082032_d2e0a6/install/setup.bash"
 cd "$WS/src/agt_mapping_framework"
 ./scripts/run_mid360_mapping.sh /path/to/mid360_bag --setup "$TEST_SETUP" --no-rviz

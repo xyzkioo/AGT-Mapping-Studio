@@ -154,7 +154,7 @@ The OpenGL overlay retains the existing FPS/file display and adds the selection 
 Use an existing artifact such as:
 
 ```text
-/home/yangxuan/ros2_ws/experiments/artifacts/output/mid360_20260901_205036/map_package/map.pcd
+$ROS2_WS/experiments/artifacts/output/mid360_20260901_205036/map_package/map.pcd
 ```
 
 Required checks:

@@ -33,6 +33,110 @@
 
 int main(int argc,char **argv) {
   QApplication application(argc,argv);
+  if (argc == 2 && QString::fromLocal8Bit(argv[1]) == "--check-edit-persistence") {
+    using namespace agt_map_studio;
+    QTemporaryDir temp;
+    const auto write = [](const QString &path, const QByteArray &data) {
+      QFile file(path); return file.open(QIODevice::WriteOnly) && file.write(data) == data.size();
+    };
+    const QByteArray pcd = "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\nWIDTH 3\nHEIGHT 1\nPOINTS 3\nDATA ascii\n0 0 0\n1 0 0\n2 0 0\n";
+    if (!write(temp.filePath("map.pcd"), pcd)) return 110;
+    QString error;
+    MainWindow first{QString()};
+    if (!first.open_pcd(temp.filePath("map.pcd"), &error)) return 111;
+    auto *viewer = first.findChild<PointCloudViewer*>();
+    QMetaObject::invokeMethod(&first, "set_mode_delete", Qt::DirectConnection);
+    viewer->select_xy_region(-.5, -.5, .5, .5);
+    QMetaObject::invokeMethod(&first, "delete_selected", Qt::DirectConnection);
+    if (!first.save_session(&error)) { std::cerr << error.toStdString(); return 112; }
+    const QString session_path = temp.filePath("map_studio/studio_session.yaml");
+    MainWindow restored{QString()};
+    if (!restored.open_session(session_path, &error)) { std::cerr << error.toStdString(); return 113; }
+    auto *back = restored.findChild<PointCloudViewer*>();
+    QMetaObject::invokeMethod(&restored, "set_mode_delete", Qt::DirectConnection);
+    if (back->stats_text() != viewer->stats_text()) return 114;
+    QMetaObject::invokeMethod(&restored, "undo_edit", Qt::DirectConnection);
+    if (back->stats_text() == viewer->stats_text()) return 115;
+    QMetaObject::invokeMethod(&restored, "redo_edit", Qt::DirectConnection);
+    if (back->stats_text() != viewer->stats_text()) return 116;
+    const auto before = back->stats_text();
+    if (!write(temp.filePath("map.pcd"), pcd + "\n")) return 117;
+    if (restored.open_session(session_path, &error) || back->stats_text() != before) return 118;
+
+    // Undoing all saved deletes is still dirty. Discard on close must retain the saved session.
+    write(temp.filePath("map.pcd"), pcd);
+    QFile descriptor(session_path); descriptor.open(QIODevice::ReadOnly);
+    const QByteArray saved_descriptor = descriptor.readAll(); descriptor.close();
+    QMetaObject::invokeMethod(&restored, "undo_edit", Qt::DirectConnection);
+    bool discard_prompt = false;
+    QTimer discard_dialog;
+    QObject::connect(&discard_dialog, &QTimer::timeout, [&]() {
+      for (auto *widget : QApplication::topLevelWidgets()) {
+        if (auto *message = qobject_cast<QMessageBox*>(widget)) {
+          if (message->standardButtons().testFlag(QMessageBox::Discard)) {
+            discard_prompt = true;
+            message->button(QMessageBox::Discard)->click();
+          }
+        }
+      }
+    });
+    discard_dialog.start(5);
+    if (!restored.close() || !discard_prompt) return 126;
+    discard_dialog.stop();
+    descriptor.open(QIODevice::ReadOnly);
+    if (descriptor.readAll() != saved_descriptor) return 127;
+    descriptor.close();
+
+    QDir(temp.path()).mkpath("fake/bin");
+    QDir(temp.path()).mkpath("fake/lib/agt_map_refinement_core");
+    const QString fake = temp.filePath("fake/bin/ros2");
+    if (!write(fake, "#!/usr/bin/python3\nimport sys,time,pathlib,shutil\ntime.sleep(0.2)\na=sys.argv;o=pathlib.Path(a[a.index('--output')+1]);o.mkdir();shutil.copy(pathlib.Path(a[a.index('--map-package')+1])/'map.pcd',o/'map.pcd')\n")) return 119;
+    QFile::setPermissions(fake, QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
+    const QString entry = temp.filePath("fake/lib/agt_map_refinement_core/apply_map_refinement");
+    write(entry, "#!/bin/sh\nexit 0\n");
+    QFile::setPermissions(entry, QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
+    qputenv("PATH", (temp.filePath("fake/bin") + ":" + qEnvironmentVariable("PATH")).toUtf8());
+    qputenv("AMENT_PREFIX_PATH", (temp.filePath("fake") + ":" + qEnvironmentVariable("AMENT_PREFIX_PATH")).toUtf8());
+    bool rejected = false;
+    QTimer dialogs;
+    QObject::connect(&dialogs, &QTimer::timeout, [&]() {
+      for (auto *widget : QApplication::topLevelWidgets()) {
+        if (auto *message = qobject_cast<QMessageBox*>(widget)) {
+          if (message->text().contains("Inputs changed")) rejected = true;
+          message->accept();
+        }
+      }
+    });
+    dialogs.start(5);
+    for (int changed = 0; changed < 2; ++changed) {
+      const QString package = temp.filePath(QString("package_%1").arg(changed));
+      QDir().mkpath(package); write(package + "/map.pcd", pcd); write(package + "/manifest.yaml", "{}\n");
+      MainWindow running{QString()};
+      if (!running.open_mapping_package(package, &error)) return 120;
+      auto *view = running.findChild<PointCloudViewer*>();
+      QMetaObject::invokeMethod(&running, "set_mode_delete", Qt::DirectConnection);
+      view->select_xy_region(-.5, -.5, .5, .5);
+      QMetaObject::invokeMethod(&running, "delete_selected", Qt::DirectConnection);
+      QMetaObject::invokeMethod(&running, "run_refine", Qt::DirectConnection);
+      if (changed) {
+        view->select_xy_region(.5, -.5, 1.5, .5);
+        QMetaObject::invokeMethod(&running, "delete_selected", Qt::DirectConnection);
+      }
+      QElapsedTimer wait; wait.start();
+      while (wait.elapsed() < 1500) { QApplication::processEvents(); QThread::msleep(2); }
+      if (!running.save_session(&error)) return 121;
+      WorkflowSession saved;
+      if (!saved.load(package + "_studio/studio_session.yaml", &error)) return 122;
+      const bool fresh = saved.state(WorkflowSession::Refine) == StageState::Fresh;
+      if (fresh == bool(changed)) return 123;
+      if (changed && !rejected) return 124;
+      auto rules = YAML::LoadFile((package + "_studio/refinement.yaml").toStdString());
+      if (rules["operations"].size() != 1 || rules["operations"][0]["type"].as<std::string>() != "remove_indices") return 125;
+    }
+    std::cout << "3D session, undo/redo, source binding and async input guard passed\n";
+    return 0;
+  }
+
   if (argc == 2 && QString::fromLocal8Bit(argv[1]) == "--check-xy-link") {
     QTemporaryDir temp;
     const auto write = [](const QString &path, const QByteArray &data) {
@@ -363,7 +467,9 @@ int main(int argc,char **argv) {
   QTimer timeout;
   timeout.setSingleShot(true);
   QObject::connect(&timeout,&QTimer::timeout,[&]() {application.exit(4);});
-  timeout.start(60000);
+  const int requested_timeout = qEnvironmentVariableIntValue("AGT_TEST_TIMEOUT_MS");
+  timeout.start(requested_timeout > 0 ? requested_timeout : 60000);
+  if (qEnvironmentVariableIsSet("AGT_TEST_SHOW_WINDOW")) window.show();
   QTimer poll;
   QObject::connect(&poll,&QTimer::timeout,[&]() {
     const QString message=window.statusBar()->currentMessage();

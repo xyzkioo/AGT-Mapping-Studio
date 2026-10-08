@@ -78,6 +78,9 @@ public:
   const QString &editor_map_path() const { return editor_map_path_; }
   void set_editor_map_path(const QString &path) { editor_map_path_ = path; }
 
+  const QString &editor_3d_path() const { return editor_3d_path_; }
+  void set_editor_3d_path(const QString &path) { editor_3d_path_ = path; }
+
   // Fingerprints of the current in-memory edits; owned by the caller.
   void set_refinement_fingerprint(const QString &value) { refinement_fingerprint_ = value; }
   void set_patch_fingerprint(const QString &value) { patch_fingerprint_ = value; }
@@ -122,6 +125,7 @@ private:
   QString source_pcd_sha256_;
   QString work_dir_;
   QString editor_map_path_;
+  QString editor_3d_path_;
   QString refinement_fingerprint_;
   QString patch_fingerprint_;
   ConverterParameters converter_;

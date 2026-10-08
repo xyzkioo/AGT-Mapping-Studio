@@ -2,6 +2,7 @@
 import argparse
 from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
 import shlex
@@ -42,6 +43,25 @@ def parser():
     result.add_argument('--ros-setup', default='/opt/ros/humble/setup.bash', help='Base ROS setup.bash')
     result.add_argument('--setup', help='Workspace overlay setup.bash; prefer install_mapping_framework if present')
     result.add_argument('--dry-run', action='store_true', help='Check input and print plan; no ROS nodes or output writes')
+    self_filter = result.add_argument_group('robot self filter')
+    self_filter.add_argument('--self-filter', action='store_true',
+                             help='Remove robot-body LiDAR returns before FAST-LIO2')
+    self_filter.add_argument('--self-filter-frame', default='livox_frame',
+                             help='LiDAR frame used as the self-filter collision-box frame')
+    self_filter.add_argument('--self-filter-box-size', nargs=3, type=float, metavar=('X', 'Y', 'Z'),
+                             help='Robot collision box size in metres; required with --self-filter')
+    self_filter.add_argument('--self-filter-box-offset', nargs=3, type=float, metavar=('X', 'Y', 'Z'),
+                             default=(0.0, 0.0, 0.0),
+                             help='Collision-box centre relative to the LiDAR frame in metres')
+    self_filter.add_argument('--self-filter-padding', type=float, default=0.02,
+                             help='Extra padding around the collision box in metres')
+    vehicle_filter = result.add_argument_group('observed vehicle self-return filter')
+    vehicle_filter.add_argument('--vehicle-return-filter', action='store_true',
+                                help='Remove the observed fixed rear return cluster before mapping')
+    vehicle_filter.add_argument('--vehicle-return-box-min', nargs=3, type=float,
+                                default=(-0.82, -0.18, -0.10), metavar=('X', 'Y', 'Z'))
+    vehicle_filter.add_argument('--vehicle-return-box-max', nargs=3, type=float,
+                                default=(-0.48, 0.18, 0.70), metavar=('X', 'Y', 'Z'))
     live = result.add_argument_group('live MID360 mode')
     live.add_argument('--live', action='store_true',
                       help='Map from the connected MID360 instead of a bag; always records a raw bag')
@@ -54,6 +74,31 @@ def parser():
                       help='Abort (no export) when no IMU samples arrive for this long; 0 disables')
     return result
 
+
+
+def _self_filter_parameters(args):
+    size = args.self_filter_box_size or (0.0, 0.0, 0.0)
+    return {
+        'self_filter_enabled': args.self_filter,
+        'self_filter_frame': args.self_filter_frame,
+        'self_filter_size_x': size[0],
+        'self_filter_size_y': size[1],
+        'self_filter_size_z': size[2],
+        'self_filter_offset_x': args.self_filter_box_offset[0],
+        'self_filter_offset_y': args.self_filter_box_offset[1],
+        'self_filter_offset_z': args.self_filter_box_offset[2],
+        'self_filter_padding': args.self_filter_padding,
+    }
+
+
+def _vehicle_return_parameters(args):
+    return {
+        'vehicle_return_filter_enabled': args.vehicle_return_filter,
+        **{f'vehicle_return_box_{bound}_{axis}': value
+           for bound, values in (('min', args.vehicle_return_box_min),
+                                 ('max', args.vehicle_return_box_max))
+           for axis, value in zip('xyz', values)},
+    }
 
 def _default_livox_config(workspace, setup):
     candidates = [setup.parent / DEFAULT_LIVOX_CONFIG,
@@ -83,6 +128,8 @@ def _live_plan(args, workspace, setup, ros_setup, start_rviz):
         'start_rviz': start_rviz, 'keep_open': args.keep_open,
         'startup_timeout': args.startup_timeout, 'export_timeout': args.export_timeout,
         'drain_seconds': args.drain_seconds,
+        **_self_filter_parameters(args),
+        **_vehicle_return_parameters(args),
     }
     command = ['ros2', 'launch', 'agt_mapping_bringup', 'mapping_live_mid360.launch.py']
     command += [f'{key}:={str(value).lower() if isinstance(value, bool) else value}'
@@ -125,6 +172,21 @@ def main(argv=None):
             raise PreflightError('--export-timeout must exceed --drain-seconds')
         if not 0 <= args.domain_id <= 101:
             raise PreflightError('--domain-id must be between 0 and 101')
+        args.self_filter_padding = validate_number(
+            args.self_filter_padding, 'self_filter_padding', allow_zero=True)
+        if args.self_filter:
+            if args.self_filter_box_size is None:
+                raise PreflightError('--self-filter requires --self-filter-box-size X Y Z')
+            args.self_filter_box_size = tuple(
+                validate_number(value, f'self_filter_box_size[{index}]')
+                for index, value in enumerate(args.self_filter_box_size))
+        if args.self_filter and args.vehicle_return_filter:
+            raise PreflightError('Choose --self-filter or --vehicle-return-filter, not both')
+        if (not all(math.isfinite(value) for value in
+                    (*args.vehicle_return_box_min, *args.vehicle_return_box_max)) or
+                any(lo >= hi for lo, hi in zip(
+                    args.vehicle_return_box_min, args.vehicle_return_box_max))):
+            raise PreflightError('vehicle return box must have finite min < max on each axis')
         if args.live:
             if args.bag and not args.output:
                 # `--live OUTPUT` is the natural spelling: the positional is the output.
@@ -171,6 +233,8 @@ def main(argv=None):
             'start_paused': args.start_paused, 'auto_export': not args.manual_export,
             'keep_open': args.keep_open, 'startup_timeout': args.startup_timeout,
             'export_timeout': args.export_timeout, 'drain_seconds': args.drain_seconds,
+            **_self_filter_parameters(args),
+            **_vehicle_return_parameters(args),
         }
         command = ['ros2', 'launch', 'agt_mapping_bringup', 'mapping_v0.launch.py']
         command += [f'{key}:={str(value).lower() if isinstance(value, bool) else value}'

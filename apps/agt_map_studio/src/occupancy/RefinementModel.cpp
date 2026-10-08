@@ -1,4 +1,5 @@
 #include "occupancy/RefinementModel.hpp"
+#include "occupancy/MapYamlLoader.hpp"
 #include "occupancy/commands/DrawObstacleCommand.hpp"
 #include "occupancy/commands/EraseRectangleCommand.hpp"
 #include "occupancy/commands/ForbiddenPolygonCommand.hpp"
@@ -350,6 +351,14 @@ bool RefinementModel::export_navigation_map(const std::string &output_dir,
       fs::remove_all(staging);
       return false;
     }
+    GridMap verified;
+    MapYamlMetadata metadata;
+    std::string detail;
+    if (!MapYamlLoader::load((staging/"map.yaml").string(), &verified, &metadata, &detail))
+      throw std::runtime_error("Cannot reload exported map: " + detail);
+    for (std::size_t i = 0; i < verified.cells().size(); ++i)
+      if (verified.cells()[i] != effective_at_index(i))
+        throw std::runtime_error("Exported map changed a cell classification");
     if (fs::exists(output)) { fs::rename(output, backup); moved_old = true; }
     try { fs::rename(staging, output); }
     catch (...) { if (moved_old) fs::rename(backup, output); throw; }
@@ -383,7 +392,7 @@ bool RefinementModel::write_navigation_files(const std::string &output_dir,
         const auto value = effective_at(x, static_cast<std::uint32_t>(image_y));
         unsigned char pixel = value == GridMap::kOccupied ? 0U
                              : value == GridMap::kFree ? 254U : 205U;
-        if (metadata_.negate && value != GridMap::kUnknown) pixel = 255U - pixel;
+        // Canonical trinary encoding preserves all three cell classes on reload.
         pgm.write(reinterpret_cast<const char *>(&pixel), 1);
       }
     }
@@ -392,10 +401,10 @@ bool RefinementModel::write_navigation_files(const std::string &output_dir,
              << YAML::Key << "resolution" << YAML::Value << base_map_.resolution()
              << YAML::Key << "origin" << YAML::Value << YAML::Flow << YAML::BeginSeq
              << base_map_.origin_x() << base_map_.origin_y() << 0.0 << YAML::EndSeq
-             << YAML::Key << "occupied_thresh" << YAML::Value << metadata_.occupied_thresh
-             << YAML::Key << "free_thresh" << YAML::Value << metadata_.free_thresh
-             << YAML::Key << "negate" << YAML::Value << (metadata_.negate ? 1 : 0)
-             << YAML::Key << "mode" << YAML::Value << metadata_.mode << YAML::EndMap;
+             << YAML::Key << "occupied_thresh" << YAML::Value << 0.65
+             << YAML::Key << "free_thresh" << YAML::Value << 0.196
+             << YAML::Key << "negate" << YAML::Value << 0
+             << YAML::Key << "mode" << YAML::Value << "trinary" << YAML::EndMap;
     std::ofstream yaml_stream(directory / "map.yaml");
     yaml_stream << map_yaml.c_str() << '\n';
     std::string refinement_error;

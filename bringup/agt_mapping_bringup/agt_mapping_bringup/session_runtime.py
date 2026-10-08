@@ -47,6 +47,7 @@ def _wait_ready(rclpy, node, output):
     from std_srvs.srv import Trigger
     timeout = float(node.declare_parameter('startup_timeout', 45.0).value)
     lidar = node.declare_parameter('lidar_topic', '/livox/lidar').value
+    lidar_prefilter = node.declare_parameter('lidar_prefilter_topic', '').value
     imu = node.declare_parameter('imu_topic', '/livox/imu').value
     require_publishers = bool(node.declare_parameter('require_publishers', False).value)
     client = node.create_client(Trigger, '/mapping/backend/export_artifact')
@@ -67,13 +68,15 @@ def _wait_ready(rclpy, node, output):
             missing.append('/pgo/save_maps')
         # Confirm the consumer chain exists BEFORE any recorded samples are published.
         required = {
-            lidar: {'mid360_adapter_node'},
+            lidar: {'livox_self_return_filter_node'} if lidar_prefilter else {'mid360_adapter_node'},
             imu: {'lio_node'},
             '/mapping/sensor/livox': {'lio_node'},
             '/mapping/frontend/cloud': {'pgo_node'},
             '/mapping/frontend/odometry': {'pgo_node', 'pgo_backend_node'},
             '/mapping/backend/status': {'mapping_artifact_exporter'},
         }
+        if lidar_prefilter:
+            required[lidar_prefilter] = {'mid360_adapter_node'}
         for topic, consumers in required.items():
             present = {info.node_name for info in node.get_subscriptions_info_by_topic(topic)}
             if not consumers.issubset(present):

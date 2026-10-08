@@ -91,7 +91,7 @@ Studio 可读取的输出类型为 `map_package`、`point_cloud`、`occupancy_ma
 对已经编译安装的算法，应修改安装目录中的描述文件，不能只修改源码副本。下面以工具仓库 `.studio-install` 内的局部投影复现模块为例：
 
 ```bash
-cd /home/xyzkioo/ros2_workspace/src/agt-lio-pgo-mapping
+cd $REPO_ROOT
 
 # 取消注册，仅删除这一份安装后的描述文件
 rm .studio-install/agt_local_ground_projection/share/agt_local_ground_projection/algorithms/local_ground.yaml

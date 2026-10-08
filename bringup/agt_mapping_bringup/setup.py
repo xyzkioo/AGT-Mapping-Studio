@@ -10,7 +10,7 @@ setup(name=package_name, version='0.3.0', packages=[package_name], data_files=[
     ('share/' + package_name + '/config', glob('config/*.yaml')),
     ('share/' + package_name + '/rviz', glob('rviz/*.rviz')),
 ], install_requires=['setuptools'], zip_safe=True, maintainer='AGT Mapping Team',
-    maintainer_email='xuanyang.robotics@gmail.com',
+    maintainer_email='',
     description='Verified offline/live mapping workflow and pipeline composition.', license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={'console_scripts': [

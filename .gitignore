@@ -9,3 +9,19 @@ log/
 .studio-build/
 .studio-install/
 .studio-log/
+
+# Local AI handoff notes stay on this machine.
+AI_CONTEXT*.md
+HANDOFF*.md
+handoff*.md
+*交接*.md
+
+# Superseded delivery archive includes a local AI_CONTEXT snapshot.
+/exports/AGT_lizhi_navigation_20261008.tar.gz
+/exports/AGT_lizhi_navigation_20261008.tar.gz.sha256
+
+# Local Studio algorithm/bag test inputs, outputs and extracted packages.
+/artifacts/studio_algorithm_test_20261008/
+/artifacts/studio_bag_test_20261008/
+/artifacts/studio_bag_test_20261008.*
+/artifacts/studio_bag_test_20261008_roslogs/

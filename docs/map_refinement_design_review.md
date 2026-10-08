@@ -7,7 +7,7 @@ unchanged.
 ## Scope and repository baseline
 
 The audit was performed in the current workspace at
-`/home/yangxuan/ros2_ws/src/agt_mapping_framework`. The source repository
+`$ROS2_WS/src/agt_mapping_framework`. The source repository
 documentation identifies this project as the ROS 2 Humble mapping framework
 for MID360 -> FAST-LIO2 -> PGO -> validated map artifacts. The rosbag used by
 the baseline acceptance is external to the repository; the named fixture is

@@ -13,13 +13,14 @@ setup(
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
         ('share/' + package_name + '/rviz', glob('rviz/*.rviz')),
     ],
-    install_requires=['setuptools', 'PyYAML'],
+    install_requires=['setuptools', 'PyYAML', 'numpy', 'Pillow'],
     zip_safe=True,
     maintainer='AGT Mapping Team',
-    maintainer_email='xuanyang.robotics@gmail.com',
+    maintainer_email='',
     description='RViz interactive marker editor for map refinement rules.',
     license='Apache-2.0',
     entry_points={'console_scripts': [
         'map_refinement_editor = agt_map_editor.editor_node:main',
+        'grid_map_editor = agt_map_editor.grid_editor:main',
     ]},
 )

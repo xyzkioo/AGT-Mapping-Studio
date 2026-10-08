@@ -5,7 +5,7 @@ import math
 from typing import Any
 
 
-REMOVE_TYPES = ('remove_polygon', 'remove_box', 'remove_sphere', 'remove_height_band')
+REMOVE_TYPES = ('remove_polygon', 'remove_box', 'remove_sphere', 'remove_height_band', 'remove_indices')
 RESTRICTION_TYPES = ('forbidden_zone',)
 SUPPORTED_TYPES = REMOVE_TYPES + RESTRICTION_TYPES
 
@@ -33,7 +33,18 @@ def validate_operation(operation: Any) -> None:
     if not isinstance(operation, dict) or operation.get('type') not in SUPPORTED_TYPES:
         raise ValueError(f'unsupported refinement operation: {operation}')
     kind = operation['type']
-    if kind in {'remove_polygon', 'forbidden_zone'}:
+    if kind == 'remove_indices':
+        indices = operation.get('indices')
+        count = operation.get('source_point_count')
+        digest = operation.get('source_sha256')
+        if type(count) is not int or count < 0 or not isinstance(indices, list):
+            raise ValueError('remove_indices requires source_point_count and indices')
+        if any(type(i) is not int or i < 0 or i >= count for i in indices):
+            raise ValueError('remove_indices contains invalid point indices')
+        if (not isinstance(digest, str) or len(digest) != 64
+                or any(c not in '0123456789abcdef' for c in digest)):
+            raise ValueError('remove_indices requires a source_sha256 binding')
+    elif kind in {'remove_polygon', 'forbidden_zone'}:
         points = operation.get('points', operation.get('polygon'))
         if not isinstance(points, list) or len(points) < 3:
             raise ValueError(f'{kind} requires at least three points')
@@ -82,6 +93,8 @@ def point_in_polygon(x: float, y: float, polygon: list[list[float]]) -> bool:
 def point_is_removed(x: float, y: float, z: float, operations: list[dict[str, Any]]) -> bool:
     for operation in operations:
         kind = operation['type']
+        if kind == 'remove_indices':
+            raise ValueError('remove_indices requires the bound source PCD row index')
         if kind == 'remove_polygon':
             z_range = operation.get('z_range')
             if z_range is not None and not (z_range[0] <= z <= z_range[1]):

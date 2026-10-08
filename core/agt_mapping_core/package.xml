@@ -3,7 +3,7 @@
   <name>agt_mapping_core</name>
   <version>0.1.0</version>
   <description>Backend-neutral mapping session and pipeline coordination boundary.</description>
-  <maintainer email="xuanyang.robotics@gmail.com">AGT Mapping Team</maintainer>
+  <maintainer>AGT Mapping Team</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <exec_depend>rclpy</exec_depend>

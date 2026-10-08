@@ -19,9 +19,8 @@ struct AxisAlignedBoundingBox {
   bool valid = false;
 };
 
-// Reproducible geometry that produced a selection. It is serialised into
-// agt_map_refinement_core `refinement.yaml` rules so the same deletion can be
-// replayed outside the GUI.
+// Geometry that produced a selection. Studio exports exact original point IDs
+// for replay; geometry is retained as editing evidence and for undo.
 struct SelectionGeometry {
   // remove_box | remove_polygon | remove_height_band | remove_sphere
   std::string rule_type = "remove_box";
@@ -42,11 +41,13 @@ struct EditOperation {
   std::size_t point_count = 0;
   std::string timestamp;
   bool undone = false;
+  std::vector<std::size_t> indices;
 };
 
 class SelectionManager {
 public:
   void reset(std::size_t point_count);
+  void bind_source_sha256(const QString &digest) { source_sha256_ = digest; }
   void select_points(const std::vector<std::size_t> &indices,
                      const AxisAlignedBoundingBox &box);
   void select_points(const std::vector<std::size_t> &indices,
@@ -82,9 +83,13 @@ public:
 
   bool export_clean_map(const LoadedPointCloud &cloud, const QString &output_dir,
                         const QString &source_path, QString *error) const;
-  // Write agt_map_refinement_core rules (version 1) for the active deletions.
+  // With a cloud, export source-bound exact original record IDs. Without a
+  // cloud, export legacy geometric rules for coordinate-only consumers.
   bool write_refinement_rules(const QString &path, const QString &source_path,
-                              QString *error) const;
+                              QString *error, const LoadedPointCloud *cloud = nullptr) const;
+  bool save_state(const QString &path, const QString &source_sha256, QString *error) const;
+  bool load_state(const QString &path, const QString &source_sha256,
+                  std::size_t point_count, QString *error);
 
 private:
   struct DeleteCommand {
@@ -98,6 +103,7 @@ private:
   void rebuild_selection_from_statuses();
   EditOperation *operation(std::size_t id);
 
+  QString source_sha256_;
   std::vector<PointStatus> statuses_;
   std::vector<std::size_t> selected_indices_;
   SelectionGeometry selection_geometry_;

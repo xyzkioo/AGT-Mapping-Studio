@@ -1,4 +1,5 @@
 #include "workflow/WorkflowSession.hpp"
+#include <QSaveFile>
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -79,6 +80,7 @@ void WorkflowSession::reset(const QString &source_pcd, const QString &source_pac
   patch_fingerprint_.clear();
   records_.clear();
   editor_map_path_.clear();
+  editor_3d_path_.clear();
   if (work_dir_.isEmpty() && !source_pcd.isEmpty()) {
     work_dir_ = QDir(QFileInfo(source_pcd).absolutePath()).filePath(QStringLiteral("studio_work"));
   }
@@ -325,6 +327,7 @@ bool WorkflowSession::save(QString *error) const {
     out << YAML::Key << "schema_version" << YAML::Value << 1;
     out << YAML::Key << "generator" << YAML::Value << "agt_map_studio";
     out << YAML::Key << "saved_at" << YAML::Value << now_iso8601().toStdString();
+    out << YAML::Key << "editor_3d_state" << YAML::Value << editor_3d_path_.toStdString();
     out << YAML::Key << "editor_map_yaml" << YAML::Value << editor_map_path_.toStdString();
     out << YAML::Key << "source" << YAML::Value << YAML::BeginMap
         << YAML::Key << "pcd" << YAML::Value << source_pcd_.toStdString()
@@ -366,9 +369,9 @@ bool WorkflowSession::save(QString *error) const {
           << YAML::EndMap;
     }
     out << YAML::EndMap << YAML::EndMap;
-    std::ofstream stream(session_file().toStdString());
-    stream << out.c_str() << '\n';
-    if (!stream.good()) {
+    QSaveFile stream(session_file());
+    const QByteArray bytes(out.c_str());
+    if (!stream.open(QIODevice::WriteOnly) || stream.write(bytes) != bytes.size() || !stream.commit()) {
       if (error) *error = QStringLiteral("cannot write %1").arg(session_file());
       return false;
     }
@@ -387,6 +390,7 @@ bool WorkflowSession::load(const QString &session_file, QString *error) {
       return false;
     }
     work_dir_ = QFileInfo(session_file).absolutePath();
+    editor_3d_path_ = QString::fromStdString(root["editor_3d_state"].as<std::string>(""));
     editor_map_path_ = QString::fromStdString(root["editor_map_yaml"].as<std::string>(""));
     const YAML::Node source = root["source"];
     source_pcd_ = QString::fromStdString(source["pcd"].as<std::string>(""));

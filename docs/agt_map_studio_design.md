@@ -34,7 +34,7 @@ existing map_package/map.pcd (read-only)
 
 ## 2. Repository scan
 
-扫描目标：`/home/yangxuan/ros2_ws/src/agt_mapping_framework`。
+扫描目标：`$ROS2_WS/src/agt_mapping_framework`。
 
 当前结构是一个包含多个独立 ROS package 的 source workspace，没有根目录 `CMakeLists.txt` 或根 `package.xml`。现有 package 使用：
 
@@ -238,7 +238,7 @@ Round 1 不提供 Save Map、Delete Point、Clean Map 或任何覆盖原始 arti
 ### Build
 
 ```bash
-cd /home/yangxuan/ros2_ws
+cd $ROS2_WS
 colcon build --base-paths src/agt_mapping_framework/apps/agt_map_studio
 ```
 
@@ -248,7 +248,7 @@ colcon build --base-paths src/agt_mapping_framework/apps/agt_map_studio
 
 ```bash
 ros2 run agt_map_studio map_viewer \
-  --pcd /home/yangxuan/ros2_ws/experiments/artifacts/output/mid360_20260901_205036/map_package/map.pcd
+  --pcd $ROS2_WS/experiments/artifacts/output/mid360_20260901_205036/map_package/map.pcd
 ```
 
 验证：

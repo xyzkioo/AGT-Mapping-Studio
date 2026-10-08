@@ -5,10 +5,10 @@ manifest_version: 1
 status: awaiting_human_confirmation
 source:
   repository: agt_navigation_v3
-  path: /home/yangxuan/ros2_ws/src/agt_navigation_v3
+  path: $ROS2_WS/src/agt_navigation_v3
 destination:
   repository: agt_mapping_framework
-  path: /home/yangxuan/ros2_ws/src/agt_mapping_framework
+  path: $ROS2_WS/src/agt_mapping_framework
 policy:
   current_action: documentation_only
   copy_code_now: false

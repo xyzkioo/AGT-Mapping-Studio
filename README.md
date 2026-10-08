@@ -42,6 +42,8 @@ cd ~/ros2_ws/src/agt-lio-pgo-mapping
 ./scripts/run_mid360_mapping.sh --help                           # 无需 ROS
 ```
 
+车载 MID360 的近身自身回波可以在建图输入前选择性过滤：`--vehicle-return-filter`。该选项默认关闭，针对已审阅的雷达后方小范围点簇；原始录包不变，应写入新的输出目录并与原图比较。坐标范围和适用限制见 [过滤说明](sensor/agt_livox_self_return_filter/README.md)。
+
 `--dry-run` 需要 Python 3 + PyYAML。运行前请在宿主机 Humble 环境重建新版 `agt_mapping_bringup` / `agt_mapping_artifacts` / `agt_mapping_exporter`，见 [构建与完整操作指南](docs/runtime_setup.md)。wrapper 默认使用本机回环和独立 ROS domain 89；并发任务使用不同 `--domain-id`，不要与实机运行时混用。
 
 有图形环境时默认打开 RViz，无显示时自动无界面运行。RViz 中展示的是**实时 LIO**点云与轨迹，不是最终 PGO 地图；最终可交付地图以导出的 `map_package` 为准。运行阶段和失败原因记录到输出目录的 `session.json`。
@@ -82,8 +84,8 @@ ROS_DOMAIN_ID=89 ROS_LOCALHOST_ONLY=1 \
 
 ```bash
 ./scripts/run_mid360_mapping_review.sh \
-  /home/yangxuan/ros2_ws/experiments/data/rosbag/bunker_mid360_mapping_20260901_205036 \
-  /home/yangxuan/ros2_ws/experiments/artifacts/output/bunker_mid360_review_$(date +%Y%m%d_%H%M%S) \
+  /path/to/rosbag \
+  /path/to/output \
   --lidar-topic /agt/sensors/lidar/custom \
   --imu-topic /agt/sensors/imu/data
 ```
@@ -139,6 +141,19 @@ Optimized PCD map artifact
 ```
 
 详细接口、地图格式、架构和研究扩展点见 [`docs/`](docs/)，交付验收记录见 [docs/delivery_acceptance.md](docs/delivery_acceptance.md)。本仓库独立完成建图、PCD→PGM、二维编辑和人工确认；确认后的地图可由其他运行时按需使用。
+
+
+### 二维导航地图手动编辑
+
+直接打开 PGM 对应的 Nav2 YAML，支持自由画框、矩形、多边形、空闲/障碍/未知状态、
+撤销/重做及另存修改记录：
+
+```bash
+./scripts/edit_grid_map.sh /path/to/map.yaml
+```
+
+先画框选中，点击具体操作立即修改，框内显示实际黑白灰；可将整个选区设为空闲、未知或障碍，导出至新目录并保留原图及地图坐标。
+独立工具位于 `tools/agt-grid-map-editor/`，可整目录复制；详细操作见 [二维地图编辑说明](tools/agt-grid-map-editor/README.md)。
 
 ## 独立离线地图处理
 
