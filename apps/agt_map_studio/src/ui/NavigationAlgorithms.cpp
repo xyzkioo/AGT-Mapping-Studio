@@ -85,7 +85,6 @@ bool MainWindow::run_mapping_algorithms() {
                                     "--output", output} + inputs;
   workflow_panel_->append_log(QStringLiteral("\nRegistered algorithm: %1\nOutput: %2\n").arg(id, output));
   run_tool(invocation,[this,output,source_fingerprint,edits_fingerprint,raster_fingerprint,publish_target](const ToolResult &result) {
-    if (!result.ok) return fail_queue(result.error_summary);
     if (session_.source_pcd_sha256()!=source_fingerprint || session_.refinement_fingerprint()!=edits_fingerprint ||
         has_unsaved_2d_edits() || QString::fromStdString(refinement_model_.active_fingerprint())!=raster_fingerprint) {
       fail_queue(QStringLiteral("Inputs changed during processing. Current view preserved. Result: %1").arg(output)); return;

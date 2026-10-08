@@ -3,7 +3,7 @@
   <name>agt_livox_self_filter_bridge</name>
   <version>0.1.0</version>
   <description>Bridge robot_self_filter PointCloud2 masks back into Livox CustomMsg for FAST-LIO2.</description>
-  <maintainer>AGT Mapping Team</maintainer>
+  <maintainer email="maintainers@example.invalid">AGT Mapping Team</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rclcpp</depend>

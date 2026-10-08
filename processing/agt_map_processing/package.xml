@@ -3,7 +3,7 @@
   <name>agt_map_processing</name>
   <version>0.1.0</version>
   <description>Standalone offline map processing, independent of Studio and map assets.</description>
-  <maintainer>AGT Mapping Team</maintainer>
+  <maintainer email="maintainers@example.invalid">AGT Mapping Team</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>liboctomap-dev</depend>

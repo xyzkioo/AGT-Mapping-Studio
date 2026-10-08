@@ -44,6 +44,8 @@ class RealLaunchSdkTests(unittest.TestCase):
         from launch.actions import RegisterEventHandler
         from launch_ros.actions import Node
         from agt_mapping_bringup.session_lock import acquire_domain_lease
+        from agt_mapping_bringup.self_filter_launch import (
+            declare_self_filter_arguments, declare_vehicle_return_arguments)
         implementation = importlib.import_module('agt_mapping_bringup.session_launch')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -67,6 +69,8 @@ class RealLaunchSdkTests(unittest.TestCase):
                 'start_rviz': 'false', 'start_paused': 'false',
                 'auto_export': 'true', 'keep_open': 'false',
             })
+            for argument in declare_self_filter_arguments() + declare_vehicle_return_arguments():
+                argument.execute(context)
             share = Path(__file__).resolve().parents[1]
             with acquire_domain_lease(99, directory=root) as lease:
                 with patch.object(implementation, 'get_package_share_directory', return_value=str(share)), \

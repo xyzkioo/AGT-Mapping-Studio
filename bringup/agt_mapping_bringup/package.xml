@@ -3,7 +3,7 @@
   <name>agt_mapping_bringup</name>
   <version>0.3.0</version>
   <description>Composition launch boundary for AGT mapping framework pipelines.</description>
-  <maintainer>AGT Mapping Team</maintainer>
+  <maintainer email="maintainers@example.invalid">AGT Mapping Team</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <exec_depend>ament_index_python</exec_depend>

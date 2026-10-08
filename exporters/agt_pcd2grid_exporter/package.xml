@@ -4,7 +4,7 @@
   <name>agt_pcd2grid_exporter</name>
   <version>0.1.0</version>
   <description>Offline baseline PCD to Nav2 occupancy-grid exporter.</description>
-  <maintainer>AGT Mapping Team</maintainer>
+  <maintainer email="maintainers@example.invalid">AGT Mapping Team</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

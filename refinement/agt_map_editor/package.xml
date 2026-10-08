@@ -3,7 +3,7 @@
   <name>agt_map_editor</name>
   <version>0.1.0</version>
   <description>RViz interactive marker editor for map refinement rules.</description>
-  <maintainer>AGT Mapping Team</maintainer>
+  <maintainer email="maintainers@example.invalid">AGT Mapping Team</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <exec_depend>rclpy</exec_depend>

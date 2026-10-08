@@ -102,6 +102,7 @@ class LaunchContractTests(unittest.TestCase):
             'launch.event_handlers': module('launch.event_handlers',
                 OnProcessExit=ProcessExit, OnShutdown=ShutdownHandler),
             'launch.events': module('launch.events', Shutdown=Action),
+            'launch.events.process': module('launch.events.process', SignalProcess=Action),
             'launch.substitutions': module('launch.substitutions', LaunchConfiguration=Configuration),
             'launch_ros': module('launch_ros'),
             'launch_ros.actions': module('launch_ros.actions', Node=Node),
@@ -110,14 +111,17 @@ class LaunchContractTests(unittest.TestCase):
         self.modules = patch.dict(sys.modules, replacements)
         self.modules.start()
         self.addCleanup(self.modules.stop)
+        names = ['agt_mapping_bringup.' + name for name in
+                 ('session_launch', 'live_launch', 'mapping_nodes', 'self_filter_launch')]
+        for name in names:
+            sys.modules.pop(name, None)
+            self.addCleanup(lambda name=name: sys.modules.pop(name, None))
         name = 'agt_mapping_bringup.session_launch'
-        sys.modules.pop(name, None)
         self.launch = importlib.import_module(name)
         lease = patch.object(self.launch, 'acquire_domain_lease',
                              return_value=types.SimpleNamespace(close=lambda: None))
         lease.start()
         self.addCleanup(lease.stop)
-        self.addCleanup(lambda: sys.modules.pop(name, None))
 
     def compose(self, **overrides):
         self.context.values.update(overrides)
@@ -221,6 +225,49 @@ class LaunchContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'either robot self filter or vehicle return filter'):
             self.compose(vehicle_return_filter_enabled='true', self_filter_enabled='true',
                          self_filter_size_x='1', self_filter_size_y='1', self_filter_size_z='1')
+
+    def test_self_filter_processes_keep_failure_handlers_and_simulated_clock(self):
+        actions = self.compose(self_filter_enabled='true', self_filter_size_x='1',
+                               self_filter_size_y='1', self_filter_size_z='1', start_rviz='true')
+        for executable in ('self_filter', 'livox_self_filter_bridge_node', 'lio_node',
+                           'fastlio_backend_node', 'pgo_node', 'pgo_backend_node',
+                           'mapping_artifact_exporter'):
+            node = next(a for a in actions if isinstance(a, Node) and
+                        a.kwargs.get('executable') == executable)
+            self.assertTrue(node.kwargs['parameters'][0]['use_sim_time'])
+            following = self.callback(executable)(self.event(1), self.context)
+            self.assertTrue(any(isinstance(a, Failure) for a in following))
+        rviz = next(a for a in actions if isinstance(a, Node) and a.kwargs.get('executable') == 'rviz2')
+        self.assertTrue(rviz.kwargs['parameters'][0]['use_sim_time'])
+
+    def test_live_mapping_keeps_wall_clock_and_records_raw_topics_after_readiness(self):
+        config = self.root / 'livox.json'
+        config.write_text(json.dumps({
+            'MID360': {'host_net_info': {key: '192.0.2.1' for key in
+                ('cmd_data_ip', 'push_msg_ip', 'point_data_ip', 'imu_data_ip')}},
+            'lidar_configs': [{'ip': '192.0.2.2'}],
+        }))
+        self.context.values.update({
+            'livox_config': str(config), 'lidar_topic': '/livox/lidar', 'imu_topic': '/livox/imu',
+            'duration_seconds': '0', 'sensor_stall_seconds': '5',
+            'publish_freq': '10', 'frame_id': 'livox_frame',
+            'vehicle_return_filter_enabled': 'true',
+        })
+        live = importlib.import_module('agt_mapping_bringup.live_launch')
+        with patch.object(live, 'acquire_domain_lease', return_value=types.SimpleNamespace(close=lambda: None)):
+            actions = live.launch_live_session(self.context)
+        self.handlers = [a.args[0] for a in actions if isinstance(a, Registration)]
+        self.assertFalse(any(isinstance(a, Process) for a in actions))
+        for executable in ('lio_node', 'pgo_node', 'pgo_backend_node', 'mapping_artifact_exporter'):
+            node = next(a for a in actions if isinstance(a, Node) and
+                        a.kwargs.get('executable') == executable)
+            self.assertFalse(node.kwargs['parameters'][0]['use_sim_time'])
+        driver = next(a for a in actions if isinstance(a, Node) and
+                      a.kwargs.get('executable') == 'livox_ros_driver2_node')
+        self.assertEqual(driver.kwargs['parameters'][0]['xfer_format'], 1)
+        following = self.callback('mapping_wait_ready')(self.event(0), self.context)
+        recorder = next(a for a in following if isinstance(a, Process))
+        self.assertEqual(recorder.kwargs['cmd'][-2:], ['/livox/lidar', '/livox/imu'])
 
     def test_paused_and_rate_are_forwarded_to_player_argv(self):
         self.compose(start_paused='true', playback_rate='2.5')

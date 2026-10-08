@@ -3,7 +3,7 @@
   <name>agt_map_refinement_core</name>
   <version>0.3.0</version>
   <description>Offline map refinement rules, package publication and Nav2 derivatives.</description>
-  <maintainer>AGT Mapping Team</maintainer>
+  <maintainer email="maintainers@example.invalid">AGT Mapping Team</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <exec_depend>python3-yaml</exec_depend>

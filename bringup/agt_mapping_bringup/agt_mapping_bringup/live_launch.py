@@ -23,12 +23,12 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 from .live_source import inspect_live_config
-from .preflight import frontend_remappings, parse_bool, validate_number
+from .preflight import parse_bool, validate_number
 from .session_launch import _raise_launch_error
 from .session_lock import acquire_domain_lease
+from .mapping_nodes import mapping_processes, mapping_rviz
 from .self_filter_launch import (
-    VEHICLE_RETURN_TOPIC, adapter_parameters, read_self_filter_settings,
-    read_vehicle_return_settings, self_filter_nodes, vehicle_return_nodes)
+    VEHICLE_RETURN_TOPIC, read_self_filter_settings, read_vehicle_return_settings)
 from .session_state import create_session, mark_session
 
 
@@ -74,46 +74,15 @@ def launch_live_session(context):
     if options['export_timeout'] <= options['drain_seconds']:
         raise ValueError('export_timeout must exceed drain_seconds')
     share = Path(get_package_share_directory('agt_mapping_bringup'))
-    lio_config = share / 'config' / 'fastlio2_mid360.yaml'
-    remappings = frontend_remappings(lio_config, source.imu_topic)
     filter_settings = read_self_filter_settings(context)
     vehicle_settings = read_vehicle_return_settings(context)
-    if filter_settings.enabled and vehicle_settings.enabled:
-        raise ValueError('Select either robot self filter or vehicle return filter, not both')
-    text = lambda v: ParameterValue(str(v), value_type=str)
+    text = lambda value: ParameterValue(str(value), value_type=str)
+    processes = mapping_processes(share, output, source, False,
+                                  filter_settings, vehicle_settings)
     driver = Node(package='livox_ros_driver2', executable='livox_ros_driver2_node',
                   name='livox_lidar_publisher', output='screen',
                   parameters=livox_driver_parameters(source.path, source.publish_freq, options['frame_id']))
-    adapter = Node(package='agt_mid360_adapter', executable='mid360_adapter_node',
-                   parameters=[adapter_parameters(
-                       VEHICLE_RETURN_TOPIC if vehicle_settings.enabled else source.lidar_topic,
-                       filter_settings)])
-    filter_nodes = self_filter_nodes(filter_settings, False)
-    vehicle_nodes = vehicle_return_nodes(vehicle_settings, source.lidar_topic, False)
-    nodes = [
-        driver,
-        *vehicle_nodes,
-        adapter,
-        *filter_nodes,
-        Node(package='fastlio2', namespace='fastlio2', executable='lio_node',
-             parameters=[{'config_path': text(lio_config), 'use_sim_time': False}],
-             remappings=remappings),
-        Node(package='agt_fastlio_backend', executable='fastlio_backend_node',
-             parameters=[{'use_sim_time': False}]),
-        Node(package='pgo', executable='pgo_node',
-             parameters=[{'config_path': text(share / 'config' / 'pgo_frontend.yaml'),
-                          'use_sim_time': False}]),
-        Node(package='agt_pgo_backend', executable='pgo_backend_node',
-             parameters=[{'use_sim_time': False, 'pgo_output_dir': text(output / 'pgo_raw')}]),
-        Node(package='agt_mapping_exporter', executable='mapping_artifact_exporter',
-             parameters=[{'use_sim_time': False, 'output_dir': text(output)}]),
-    ]
-    labels = ['Livox driver', 'sensor adapter']
-    if vehicle_settings.enabled:
-        labels.insert(1, 'Livox vehicle return filter')
-    if filter_settings.enabled:
-        labels += ['robot self filter', 'Livox self-filter bridge']
-    labels += ['FAST-LIO2', 'frontend bridge', 'PGO', 'PGO bridge', 'artifact exporter']
+    processes.insert(0, (driver, 'Livox driver'))
     recorder = ExecuteProcess(cmd=raw_record_command(output, source.lidar_topic, source.imu_topic),
                               output='screen')
     ready = Node(package='agt_mapping_bringup', executable='mapping_wait_ready', output='screen',
@@ -188,15 +157,10 @@ def launch_live_session(context):
         RegisterEventHandler(OnProcessExit(target_action=finalizer, on_exit=export_exit)),
     ]
     actions.extend(RegisterEventHandler(OnProcessExit(target_action=node, on_exit=critical_exit(label)))
-                   for node, label in zip(nodes, labels))
-    actions.extend(nodes)
+                   for node, label in processes)
+    actions.extend(node for node, _ in processes)
     if options['start_rviz']:
-        actions.append(Node(
-            package='rviz2', executable='rviz2', name='agt_mapping_rviz', output='screen',
-            arguments=['-d', str(share / 'rviz' / 'mapping_v0.rviz')],
-            additional_env={'SNAP': '', 'SNAP_LIBRARY_PATH': '', 'GTK_PATH': '',
-                            'GTK_EXE_PREFIX': '', 'GIO_MODULE_DIR': '', 'GTK_IM_MODULE_FILE': ''},
-        ))
+        actions.append(mapping_rviz(share, False))
     actions.append(ready)
     lease = acquire_domain_lease()
     try:

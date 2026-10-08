@@ -36,12 +36,14 @@
 #include <QInputDialog>
 #include <QLabel>
 #include <QMenuBar>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QProcessEnvironment>
 #include <QStatusBar>
 #include <QStringList>
 #include <QToolBar>
+#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -372,9 +374,9 @@ void MainWindow::create_actions() {
   toolbar_3d_->setMovable(false);
   auto *mode_group = new QActionGroup(this);
   mode_group->setExclusive(true);
-  mode_navigate_action_ = toolbar_3d_->addAction(QStringLiteral("Navigate (N)"));
-  mode_select_action_ = toolbar_3d_->addAction(QStringLiteral("Select (B)"));
-  mode_delete_action_ = toolbar_3d_->addAction(QStringLiteral("Delete (X)"));
+  mode_navigate_action_ = toolbar_3d_->addAction(QStringLiteral("Navigate"));
+  mode_select_action_ = toolbar_3d_->addAction(QStringLiteral("Select"));
+  mode_delete_action_ = toolbar_3d_->addAction(QStringLiteral("Delete"));
   mode_navigate_action_->setShortcut(Qt::Key_N);
   mode_select_action_->setShortcut(Qt::Key_B);
   mode_delete_action_->setShortcut(Qt::Key_X);
@@ -389,28 +391,31 @@ void MainWindow::create_actions() {
   toolbar_3d_->addSeparator();
   toolbar_3d_->addWidget(new QLabel(QStringLiteral(" Tool: "), this));
   selection_tool_combo_ = new QComboBox(this);
-  selection_tool_combo_->addItem(QStringLiteral("Rectangle (drag)"), static_cast<int>(SelectionTool::ScreenRect));
-  selection_tool_combo_->addItem(QStringLiteral("Polygon (click, double-click to close)"), static_cast<int>(SelectionTool::PolygonPrism));
-  selection_tool_combo_->addItem(QStringLiteral("Sphere (click)"), static_cast<int>(SelectionTool::Sphere));
+  selection_tool_combo_->addItem(QStringLiteral("Rectangle"), static_cast<int>(SelectionTool::ScreenRect));
+  selection_tool_combo_->addItem(QStringLiteral("Polygon"), static_cast<int>(SelectionTool::PolygonPrism));
+  selection_tool_combo_->addItem(QStringLiteral("Sphere"), static_cast<int>(SelectionTool::Sphere));
   selection_tool_combo_->setToolTip(QStringLiteral("How points are selected in Select/Delete mode"));
+  selection_tool_combo_->setFixedWidth(112);
   toolbar_3d_->addWidget(selection_tool_combo_);
   connect(selection_tool_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
     viewer_->set_selection_tool(static_cast<SelectionTool>(selection_tool_combo_->itemData(index).toInt()));
     sphere_radius_spin_->setEnabled(viewer_->selection_tool() == SelectionTool::Sphere);
   });
-  toolbar_3d_->addWidget(new QLabel(QStringLiteral(" r(m) "), this));
   sphere_radius_spin_ = new QDoubleSpinBox(this);
   sphere_radius_spin_->setRange(0.05, 20.0);
   sphere_radius_spin_->setSingleStep(0.1);
   sphere_radius_spin_->setDecimals(2);
   sphere_radius_spin_->setValue(0.5);
+  sphere_radius_spin_->setPrefix(QStringLiteral("r "));
+  sphere_radius_spin_->setSuffix(QStringLiteral(" m"));
+  sphere_radius_spin_->setFixedWidth(88);
   sphere_radius_spin_->setEnabled(false);
   sphere_radius_spin_->setToolTip(QStringLiteral("Sphere selection radius"));
   toolbar_3d_->addWidget(sphere_radius_spin_);
   connect(sphere_radius_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
           [this](double value) { viewer_->set_sphere_radius(value); viewer_->mark_edit_state_dirty(); });
   toolbar_3d_->addSeparator();
-  z_window_check_ = new QCheckBox(QStringLiteral("Z window"), this);
+  z_window_check_ = new QCheckBox(QStringLiteral("Z"), this);
   z_window_check_->setToolTip(QStringLiteral("Limit rectangle/polygon selections to a height band"));
   toolbar_3d_->addWidget(z_window_check_);
   z_min_spin_ = new QDoubleSpinBox(this);
@@ -418,11 +423,13 @@ void MainWindow::create_actions() {
   z_min_spin_->setDecimals(2);
   z_min_spin_->setValue(-1.0);
   z_min_spin_->setPrefix(QStringLiteral("min "));
+  z_min_spin_->setFixedWidth(94);
   z_max_spin_ = new QDoubleSpinBox(this);
   z_max_spin_->setRange(-1000.0, 1000.0);
   z_max_spin_->setDecimals(2);
   z_max_spin_->setValue(3.0);
   z_max_spin_->setPrefix(QStringLiteral("max "));
+  z_max_spin_->setFixedWidth(94);
   toolbar_3d_->addWidget(z_min_spin_);
   toolbar_3d_->addWidget(z_max_spin_);
   const auto apply_z_window = [this]() {
@@ -440,6 +447,13 @@ void MainWindow::create_actions() {
   occupancy_toolbar_ = addToolBar(QStringLiteral("2D Edit"));
   occupancy_toolbar_->setMovable(false);
   auto *occupancy_group = new QActionGroup(this);
+  auto *occupancy_menu = new QMenu(this);
+  auto *occupancy_mode_button = new QToolButton(this);
+  occupancy_mode_button->setPopupMode(QToolButton::MenuButtonPopup);
+  occupancy_mode_button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+  occupancy_mode_button->setToolTip(QStringLiteral("Choose the active 2D editing mode"));
+  occupancy_mode_button->setMenu(occupancy_menu);
+  occupancy_toolbar_->addWidget(occupancy_mode_button);
   occupancy_group->setExclusive(true);
   struct ModeEntry {
     const char *label;
@@ -448,11 +462,11 @@ void MainWindow::create_actions() {
   };
   const ModeEntry entries[] = {
       {"View", OccupancyInteractionMode::View, "Pan/zoom only"},
-      {"Linked Inspect", OccupancyInteractionMode::InspectXY, "Click a cell or drag a rectangle to highlight points in the same XY region across all heights"},
-      {"Erase rect", OccupancyInteractionMode::Erase, "With a highlighted selection: clear selected 2D obstacles. Without a selection: drag to erase. Does not delete 3D points."},
+      {"Inspect", OccupancyInteractionMode::InspectXY, "Click a cell or drag a rectangle to highlight points in the same XY region across all heights"},
+      {"Erase", OccupancyInteractionMode::Erase, "With a highlighted selection: clear selected 2D obstacles. Without a selection: drag to erase. Does not delete 3D points."},
       {"Obstacle line", OccupancyInteractionMode::Obstacle, "Drag a line of given width -> occupied"},
-      {"Mark obstacle", OccupancyInteractionMode::ObstacleMarker, "Click to mark a missed pole or obstacle as occupied. Width (m) sets the square footprint, rounded up to whole cells (at least one cell)."},
-      {"Free rect", OccupancyInteractionMode::FreeRectangle, "Drag: occupied and unknown -> free"},
+      {"Mark obstacle", OccupancyInteractionMode::ObstacleMarker, "Click to mark a missed pole or obstacle as occupied. Width sets the square footprint, rounded up to whole cells (at least one cell)."},
+      {"Free rectangle", OccupancyInteractionMode::FreeRectangle, "Drag: occupied and unknown -> free"},
       {"Free polygon", OccupancyInteractionMode::FreePolygon, "Click vertices, double-click: fill free"},
       {"Occupied polygon", OccupancyInteractionMode::OccupiedPolygon, "Click vertices, double-click: fill occupied"},
       {"Unknown polygon", OccupancyInteractionMode::UnknownPolygon, "Click vertices, double-click: fill unknown"},
@@ -460,7 +474,7 @@ void MainWindow::create_actions() {
   };
   bool first = true;
   for (const auto &entry : entries) {
-    auto *action = occupancy_toolbar_->addAction(QString::fromUtf8(entry.label));
+    auto *action = occupancy_menu->addAction(QString::fromUtf8(entry.label));
     if (entry.mode == OccupancyInteractionMode::Erase)
       action->setObjectName(QStringLiteral("erase_rect"));
     if (entry.mode == OccupancyInteractionMode::ObstacleMarker)
@@ -468,22 +482,28 @@ void MainWindow::create_actions() {
     action->setToolTip(QString::fromUtf8(entry.tip));
     action->setCheckable(true);
     occupancy_group->addAction(action);
-    if (first) action->setChecked(true);
+    if (first) {
+      action->setChecked(true);
+      occupancy_mode_button->setDefaultAction(action);
+    }
     first = false;
     const OccupancyInteractionMode mode = entry.mode;
-    connect(action, &QAction::triggered, this, [this, mode]() {
+    connect(action, &QAction::triggered, this, [this, mode, action, occupancy_mode_button]() {
+      occupancy_mode_button->setDefaultAction(action);
       set_occupancy_mode(mode);
       if (mode == OccupancyInteractionMode::Erase && !occupancy_viewer_->highlighted_cells().empty())
         erase_selected_2d_cells();
     });
   }
   occupancy_toolbar_->addSeparator();
-  occupancy_toolbar_->addWidget(new QLabel(QStringLiteral("Width (m):"), this));
   auto *width_spin = new QDoubleSpinBox(this);
   width_spin->setRange(0.01, 10.0);
   width_spin->setSingleStep(0.05);
   width_spin->setDecimals(2);
   width_spin->setValue(0.20);
+  width_spin->setPrefix(QStringLiteral("Width "));
+  width_spin->setSuffix(QStringLiteral(" m"));
+  width_spin->setFixedWidth(116);
   width_spin->setToolTip(QStringLiteral("Obstacle line width or marker footprint in meters; markers use at least one cell"));
   occupancy_toolbar_->addWidget(width_spin);
   connect(width_spin, qOverload<double>(&QDoubleSpinBox::valueChanged), occupancy_viewer_,
@@ -1645,21 +1665,20 @@ bool MainWindow::ensure_work_dir(QString *error) {
   return true;
 }
 
-bool MainWindow::tools_available(const QStringList &required, QString *missing) const {
-  if (!ExternalToolRunner::program_available(QStringLiteral("ros2"))) {
-    if (missing) *missing = QStringLiteral("ros2 (source /opt/ros/humble/setup.bash and the workspace overlay)");
-    return false;
-  }
+bool MainWindow::require_tools(const QStringList &required) {
   QStringList absent;
-  for (const QString &entry : required) {
-    const QStringList parts = entry.split('/');
-    if (parts.size() == 2 && !ExternalToolRunner::ros2_executable_available(parts[0], parts[1])) absent << entry;
+  if (!ExternalToolRunner::program_available(QStringLiteral("ros2"))) {
+    absent << QStringLiteral("ros2 (source /opt/ros/humble/setup.bash and the workspace overlay)");
+  } else {
+    for (const QString &entry : required) {
+      const QStringList parts = entry.split('/');
+      if (parts.size() == 2 && !ExternalToolRunner::ros2_executable_available(parts[0], parts[1]))
+        absent << entry;
+    }
   }
-  if (!absent.isEmpty()) {
-    if (missing) *missing = absent.join(QStringLiteral(", "));
-    return false;
-  }
-  return true;
+  if (absent.isEmpty()) return true;
+  fail_queue(QStringLiteral("Missing tool: %1").arg(absent.join(QStringLiteral(", "))));
+  return false;
 }
 
 QString MainWindow::tool_input_snapshot() const {
@@ -1692,6 +1711,10 @@ void MainWindow::run_tool(const ToolInvocation &invocation, std::function<void(c
   tool_callback_ = [this, snapshot, on_done = std::move(on_done)](const ToolResult &result) {
     if (snapshot != tool_input_snapshot()) {
       fail_queue(QStringLiteral("Inputs changed while the task was running. The result was not accepted; current edits are preserved. Run the step again to use the latest inputs."));
+      return;
+    }
+    if (!result.ok) {
+      fail_queue(result.error_summary);
       return;
     }
     on_done(result);
@@ -1798,10 +1821,7 @@ void MainWindow::run_refine() {
   }
   const QString output = QDir(session_.work_dir()).filePath(QStringLiteral("refined_mapping_source_%1").arg(stamp()));
   if (session_.source_is_mapping_package()) {
-    QString missing;
-    if (!tools_available({QStringLiteral("%1/%2").arg(kRefinementPackage, kRefinementTool)}, &missing)) {
-      return fail_queue(QStringLiteral("Missing tool: %1").arg(missing));
-    }
+    if (!require_tools({QStringLiteral("%1/%2").arg(kRefinementPackage, kRefinementTool)})) return;
     ToolInvocation invocation = ExternalToolRunner::ros2_run(
         QStringLiteral("apply_map_refinement"), kRefinementPackage, kRefinementTool,
         {QStringLiteral("--map-package"), session_.source_package_dir(),
@@ -1809,8 +1829,7 @@ void MainWindow::run_refine() {
          QStringLiteral("--output"), output,
          QStringLiteral("--pcd-format"), QStringLiteral("binary"),
          QStringLiteral("--no-preview-nav-map")});
-    run_tool(invocation, [this, output](const ToolResult &result) {
-      if (!result.ok) return fail_queue(result.error_summary);
+    run_tool(invocation, [this, output](const ToolResult &) {
       const QString map = QDir(output).filePath(QStringLiteral("map.pcd"));
       session_.mark_done(WorkflowSession::Refine, output, WorkflowSession::sha256_file(map),
                          QStringLiteral("apply_map_refinement"));
@@ -1840,18 +1859,14 @@ void MainWindow::run_relocalization() {
   if (session_.has_3d_edits() && session_.state(WorkflowSession::Refine) != StageState::Fresh) {
     return fail_queue(QStringLiteral("3D edits are not applied yet: run step 1 first."));
   }
-  QString missing;
-  if (!tools_available({QStringLiteral("%1/%2").arg(kRelocPackage, kRelocTool)}, &missing)) {
-    return fail_queue(QStringLiteral("Missing tool: %1").arg(missing));
-  }
+  if (!require_tools({QStringLiteral("%1/%2").arg(kRelocPackage, kRelocTool)})) return;
   const QString output = QDir(session_.work_dir()).filePath(QStringLiteral("relocalization_%1").arg(stamp()));
   QDir().mkpath(output);
   const QString pcd = session_.effective_pcd();
   ToolInvocation invocation = ExternalToolRunner::ros2_run(
       QStringLiteral("build_relocalization_assets"), kRelocPackage, kRelocTool,
       {QStringLiteral("--map"), pcd, QStringLiteral("--output"), output});
-  run_tool(invocation, [this, output](const ToolResult &result) {
-    if (!result.ok) return fail_queue(result.error_summary);
+  run_tool(invocation, [this, output](const ToolResult &) {
     session_.mark_done(WorkflowSession::Relocalization, output, session_.effective_pcd_sha256(),
                        QStringLiteral("build_relocalization_assets"));
     save_session_quietly();
@@ -1866,11 +1881,8 @@ void MainWindow::run_navigation() {
   if (session_.has_3d_edits() && session_.state(WorkflowSession::Refine) != StageState::Fresh) {
     return fail_queue(QStringLiteral("3D edits are not applied yet: run step 1 first."));
   }
-  QString missing;
-  if (!tools_available({QStringLiteral("%1/pcd_to_nav_map").arg(kConverterPackage),
-                        QStringLiteral("%1/validate_nav_map").arg(kConverterPackage)}, &missing)) {
-    return fail_queue(QStringLiteral("Missing tool: %1").arg(missing));
-  }
+  if (!require_tools({QStringLiteral("%1/pcd_to_nav_map").arg(kConverterPackage),
+                        QStringLiteral("%1/validate_nav_map").arg(kConverterPackage)})) return;
   workflow_panel_->read_converter(&session_.converter());
   const QString output = QDir(session_.work_dir()).filePath(QStringLiteral("navigation_%1").arg(stamp()));
   const QString pcd = session_.effective_pcd();
@@ -1878,12 +1890,10 @@ void MainWindow::run_navigation() {
   arguments << session_.converter().to_arguments(session_.effective_poses_path());
   ToolInvocation convert = ExternalToolRunner::ros2_run(QStringLiteral("pcd_to_nav_map"), kConverterPackage,
                                                         QStringLiteral("pcd_to_nav_map"), arguments);
-  run_tool(convert, [this, output](const ToolResult &result) {
-    if (!result.ok) return fail_queue(result.error_summary);
+  run_tool(convert, [this, output](const ToolResult &) {
     ToolInvocation validate = ExternalToolRunner::ros2_run(
         QStringLiteral("validate_nav_map"), kConverterPackage, QStringLiteral("validate_nav_map"), {output});
-    run_tool(validate, [this, output](const ToolResult &validate_result) {
-      if (!validate_result.ok) return fail_queue(validate_result.error_summary);
+    run_tool(validate, [this, output](const ToolResult &) {
       session_.mark_done(WorkflowSession::Navigation, output,
                          WorkflowSession::sha256_file(QDir(output).filePath(QStringLiteral("map.pgm"))),
                          QStringLiteral("pcd_to_nav_map + validate_nav_map"));
@@ -1933,10 +1943,7 @@ void MainWindow::run_patch() {
     continue_queue();
     return;
   }
-  QString missing;
-  if (!tools_available({QStringLiteral("%1/patch_nav_map").arg(kConverterPackage)}, &missing)) {
-    return fail_queue(QStringLiteral("Missing tool: %1").arg(missing));
-  }
+  if (!require_tools({QStringLiteral("%1/patch_nav_map").arg(kConverterPackage)})) return;
   std::string write_error;
   if (!refinement_model_.write_navigation_patch(session_.navigation_patch_path().toStdString(), &write_error) ||
       !refinement_model_.write_keepout_zones(session_.keepout_zones_path().toStdString(), &write_error)) {
@@ -1947,8 +1954,7 @@ void MainWindow::run_patch() {
   ToolInvocation invocation = ExternalToolRunner::ros2_run(
       QStringLiteral("patch_nav_map"), kConverterPackage, QStringLiteral("patch_nav_map"),
       {base, session_.navigation_patch_path(), QStringLiteral("--output"), output});
-  run_tool(invocation, [this, output](const ToolResult &result) {
-    if (!result.ok) return fail_queue(result.error_summary);
+  run_tool(invocation, [this, output](const ToolResult &) {
     session_.mark_done(WorkflowSession::Patch, output,
                        WorkflowSession::sha256_file(QDir(output).filePath(QStringLiteral("map.pgm"))),
                        QStringLiteral("patch_nav_map"));
@@ -2035,10 +2041,7 @@ void MainWindow::run_publish() {
   workflow_panel_->read_publish_target(&session_.publish_target());
   const QStringList reasons = session_.blocking_reasons_for_publish();
   if (!reasons.isEmpty()) return fail_queue(QStringLiteral("Cannot publish:\n- %1").arg(reasons.join(QStringLiteral("\n- "))));
-  QString missing;
-  if (!tools_available({QStringLiteral("%1/create_map_package").arg(kManagerPackage)}, &missing)) {
-    return fail_queue(QStringLiteral("Missing tool: %1").arg(missing));
-  }
+  if (!require_tools({QStringLiteral("%1/create_map_package").arg(kManagerPackage)})) return;
   const PublishTarget &target = session_.publish_target();
   const QString destination = QDir(target.map_root).filePath(target.map_id + '/' + target.map_version);
   if (QFileInfo::exists(destination)) {
@@ -2065,8 +2068,7 @@ void MainWindow::run_publish() {
        QStringLiteral("--navigation-dir"), session_.effective_navigation_dir(),
        QStringLiteral("--relocalization-assets-dir"), session_.record(WorkflowSession::Relocalization).path,
        QStringLiteral("--generation-pipeline"), session_.pipeline_config_path()});
-  run_tool(invocation, [this, destination](const ToolResult &result) {
-    if (!result.ok) return fail_queue(result.error_summary);
+  run_tool(invocation, [this, destination](const ToolResult &) {
     session_.mark_done(WorkflowSession::Publish, destination, QString(), QStringLiteral("create_map_package"));
     save_session_quietly();
     const PublishTarget target = session_.publish_target();
@@ -2078,8 +2080,7 @@ void MainWindow::run_publish() {
         QStringLiteral("select_map_package"), kManagerPackage, QStringLiteral("select_map_package"),
         {QStringLiteral("--map-root"), target.map_root, QStringLiteral("--map-id"), target.map_id,
          QStringLiteral("--map-version"), target.map_version});
-    run_tool(select, [this, destination](const ToolResult &select_result) {
-      if (!select_result.ok) return fail_queue(select_result.error_summary);
+    run_tool(select, [this, destination](const ToolResult &) {
       statusBar()->showMessage(QStringLiteral("Published and activated %1").arg(destination), 10000);
       continue_queue();
     });

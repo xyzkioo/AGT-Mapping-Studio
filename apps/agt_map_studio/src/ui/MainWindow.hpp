@@ -122,7 +122,7 @@ private:
   void set_source(const QString &pcd_path, const QString &package_dir);
   QString stamp() const;
   bool ensure_work_dir(QString *error);
-  bool tools_available(const QStringList &required, QString *missing) const;
+  bool require_tools(const QStringList &required);
   QString tool_input_snapshot() const;
   void run_tool(const ToolInvocation &invocation, std::function<void(const ToolResult &)> on_done);
   void continue_queue();
