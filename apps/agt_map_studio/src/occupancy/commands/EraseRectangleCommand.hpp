@@ -8,6 +8,8 @@ class EraseRectangleCommand : public GridCommand {
 public:
   static std::unique_ptr<EraseRectangleCommand> create(
       const RefinementModel &model, GridWorldPoint first, GridWorldPoint second);
+  static std::unique_ptr<EraseRectangleCommand> create_cells(
+      const RefinementModel &model, std::vector<std::size_t> indices);
   explicit EraseRectangleCommand(RefinementOperation operation)
       : operation_(std::move(operation)) {}
 

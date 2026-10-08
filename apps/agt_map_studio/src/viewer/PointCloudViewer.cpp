@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <utility>
 
 namespace agt_map_studio {
@@ -269,6 +270,35 @@ bool PointCloudViewer::save_view(const QString &path, QString *error) const {
     return false;
   }
   return true;
+}
+
+std::size_t PointCloudViewer::select_xy_region(double min_x, double min_y,
+                                              double max_x, double max_y) {
+  if (!selection_manager_) return 0;
+  std::vector<std::size_t> indices;
+  AxisAlignedBoundingBox bounds;
+  bounds.min = Eigen::Vector3f::Constant(std::numeric_limits<float>::max());
+  bounds.max = Eigen::Vector3f::Constant(std::numeric_limits<float>::lowest());
+  for (std::size_t i = 0; i < cloud_.point_count(); ++i) {
+    const Eigen::Vector3f p(cloud_.xyz[3*i], cloud_.xyz[3*i+1], cloud_.xyz[3*i+2]);
+    if (p.x() >= min_x && p.x() < max_x && p.y() >= min_y && p.y() < max_y &&
+        selection_manager_->statuses()[i] != PointStatus::DELETED) {
+      indices.push_back(i);
+      bounds.min = bounds.min.cwiseMin(p);
+      bounds.max = bounds.max.cwiseMax(p);
+    }
+  }
+  bounds.valid = !indices.empty();
+  selection_manager_->select_points(indices, bounds);
+  if (bounds.valid) {
+    // Expand narrow/flat selections for a usable camera distance; Z is never filtered.
+    const Eigen::Vector3f center = (bounds.min + bounds.max) * .5F;
+    const Eigen::Vector3f half = ((bounds.max-bounds.min)*.5F).cwiseMax(Eigen::Vector3f::Constant(.5F));
+    const Eigen::Vector3f lo = center - half, hi = center + half;
+    camera_.reset(QVector3D(lo.x(), lo.y(), lo.z()), QVector3D(hi.x(), hi.y(), hi.z()));
+  }
+  mark_edit_state_dirty();
+  return indices.size();
 }
 
 void PointCloudViewer::initializeGL() {

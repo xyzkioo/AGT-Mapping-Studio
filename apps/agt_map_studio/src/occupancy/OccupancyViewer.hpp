@@ -8,6 +8,7 @@
 #include <QVector>
 #include <QWheelEvent>
 #include <QWidget>
+#include <vector>
 
 namespace agt_map_studio {
 
@@ -21,7 +22,9 @@ enum class OccupancyInteractionMode {
   FreePolygon,      // fill polygon -> free
   OccupiedPolygon,  // fill polygon -> occupied
   UnknownPolygon,   // fill polygon -> unknown
-  FreeRectangle    // drag rectangle -> free
+  FreeRectangle,   // drag rectangle -> free
+  InspectXY,       // view-only: map cell/rectangle -> all-height cloud
+  ObstacleMarker  // single click -> occupied footprint
 };
 
 inline bool occupancy_mode_uses_polygon(OccupancyInteractionMode mode) {
@@ -57,7 +60,15 @@ public:
   static QString mode_name(OccupancyInteractionMode mode);
   double obstacle_width() const { return obstacle_width_m_; }
 
+  void set_highlighted_cells(std::vector<std::size_t> cells);
+  const std::vector<std::size_t> &highlighted_cells() const { return highlighted_cells_; }
+  bool linked_inspection_enabled() const { return linked_inspection_enabled_; }
+  void set_linked_inspection_enabled(bool enabled);
+
 signals:
+  void inspect_xy_requested(double min_x, double min_y, double max_x, double max_y);
+  void inspection_unavailable();
+  void clear_inspection_requested();
   void status_changed(const QString &text);
   void erase_rectangle_requested(double min_x, double min_y, double max_x,
                                  double max_y);
@@ -85,6 +96,9 @@ private:
   QPointF world_to_screen(const GridWorldPoint &world) const;
   void finish_forbidden_polygon();
 
+  bool linked_inspection_enabled_ = false;
+  std::vector<std::size_t> highlighted_cells_;
+  QImage highlight_image_;
   GridMap map_;
   QImage image_;
   QPointF pan_ = QPointF(0.0, 0.0);

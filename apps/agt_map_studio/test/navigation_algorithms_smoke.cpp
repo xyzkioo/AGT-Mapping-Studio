@@ -19,6 +19,7 @@
 #include <QAbstractButton>
 #include <yaml-cpp/yaml.h>
 #include <QApplication>
+#include <QAction>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -32,6 +33,151 @@
 
 int main(int argc,char **argv) {
   QApplication application(argc,argv);
+  if (argc == 2 && QString::fromLocal8Bit(argv[1]) == "--check-xy-link") {
+    QTemporaryDir temp;
+    const auto write = [](const QString &path, const QByteArray &data) {
+      QFile file(path); return file.open(QIODevice::WriteOnly) && file.write(data) == data.size();
+    };
+    QDir(temp.path()).mkpath("navigation");
+    const QByteArray pcd = "# .PCD v0.7\nVERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\nWIDTH 4\nHEIGHT 1\nPOINTS 4\nDATA ascii\n0.25 0.25 -5\n0.25 0.25 8\n1.25 0.25 2\n-0.25 0.25 3\n";
+    QByteArray pgm("P2\n6 6\n255\n");
+    for (int i = 0; i < 36; ++i) pgm += (i == 14 ? "205 " : "0 "); // Unknown at grid (2,3).
+    if (!write(temp.filePath("map.pcd"), pcd) || !write(temp.filePath("manifest.yaml"), "{}\n") ||
+        !write(temp.filePath("navigation/map.pgm"), pgm) ||
+        !write(temp.filePath("navigation/map.yaml"), "image: map.pgm\nresolution: 0.5\norigin: [-1, -1, 0]\n")) return 80;
+    agt_map_studio::MainWindow window(QString{});
+    QString error;
+    if (!window.open_mapping_package(temp.path(), &error)) { std::cerr << error.toStdString(); return 81; }
+    auto *occupancy = window.findChild<agt_map_studio::OccupancyViewer*>();
+    auto *viewer = window.findChild<agt_map_studio::PointCloudViewer*>();
+    if (!occupancy->linked_inspection_enabled() || !occupancy->has_map()) return 82;
+    viewer->set_z_window(true, 0., 1.); // Linked inspection must ignore the edit Z gate.
+    if (viewer->select_xy_region(0., 0., .5, .5) != 2) return 83;
+    if (occupancy->highlighted_cells() != std::vector<std::size_t>{14}) return 84;
+    viewer->set_mode(agt_map_studio::InteractionMode::Select);
+    QMetaObject::invokeMethod(&window, "show_linked_view", Qt::DirectConnection);
+    if (viewer->mode() != agt_map_studio::InteractionMode::Navigate ||
+        occupancy->highlighted_cells() != std::vector<std::size_t>{14}) return 101;
+    viewer->save_view(temp.filePath("camera_before.yaml"), &error);
+    QMouseEvent orbit_press(QEvent::MouseButtonPress, QPointF(100, 100), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent orbit_move(QEvent::MouseMove, QPointF(160, 125), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent orbit_release(QEvent::MouseButtonRelease, QPointF(160, 125), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(viewer, &orbit_press);
+    QApplication::sendEvent(viewer, &orbit_move);
+    QApplication::sendEvent(viewer, &orbit_release);
+    viewer->save_view(temp.filePath("camera_after.yaml"), &error);
+    const auto before = YAML::LoadFile(temp.filePath("camera_before.yaml").toStdString())["camera"]["position"];
+    const auto after = YAML::LoadFile(temp.filePath("camera_after.yaml").toStdString())["camera"]["position"];
+    double camera_change = 0.;
+    for (int i = 0; i < 3; ++i) camera_change += std::abs(before[i].as<double>() - after[i].as<double>());
+    if (camera_change < 0.001 || occupancy->highlighted_cells() != std::vector<std::size_t>{14}) return 102;
+    if (viewer->select_xy_region(-.5, 0., 1.5, .5) != 4 || occupancy->highlighted_cells().size() != 3) return 85;
+    if (viewer->select_xy_region(50., 50., 51., 51.) != 0 || !occupancy->highlighted_cells().empty()) return 86;
+    occupancy->resize(600, 600);
+    occupancy->fit_map();
+    occupancy->set_mode(agt_map_studio::OccupancyInteractionMode::InspectXY);
+    const double zoom = occupancy->zoom();
+    const QPointF cell((600 - 6 * zoom) / 2 + 2.5 * zoom,
+                       (600 - 6 * zoom) / 2 + 3.5 * zoom);
+    QMouseEvent press(QEvent::MouseButtonPress, cell, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, cell, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(occupancy, &press);
+    QApplication::sendEvent(occupancy, &release);
+    if (occupancy->highlighted_cells() != std::vector<std::size_t>{14}) return 87;
+    // Check the actual painter output, not only the selection bookkeeping.
+    // Render the raster widget alone: offscreen Qt cannot create a GL context
+    // for its sibling point-cloud widget when rendering the parent window.
+    agt_map_studio::OccupancyViewer raster;
+    raster.resize(600, 600);
+    raster.set_map(occupancy->map());
+    raster.set_highlighted_cells(occupancy->highlighted_cells());
+    QImage display(raster.size(), QImage::Format_ARGB32);
+    display.fill(Qt::transparent);
+    raster.render(&display);
+    if (display.pixelColor(cell.toPoint()) != QColor(240, 35, 35)) return 96;
+    if (display.pixelColor(cell.toPoint() + QPoint(static_cast<int>(zoom), 0)) != QColor(0, 0, 0)) return 97;
+    // A drag includes both endpoint cells; the range covers all four points.
+    const QPointF first(cell.x() - zoom, cell.y());
+    const QPointF last(cell.x() + 2 * zoom, cell.y());
+    QMouseEvent drag_press(QEvent::MouseButtonPress, first, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent drag_release(QEvent::MouseButtonRelease, last, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(occupancy, &drag_press);
+    QApplication::sendEvent(occupancy, &drag_release);
+    if (occupancy->highlighted_cells().size() != 4) return 98;
+    viewer->mark_edit_state_dirty(); // A status refresh must preserve the full rectangle.
+    if (occupancy->highlighted_cells().size() != 4) return 99;
+    QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(occupancy, &escape);
+    if (!occupancy->highlighted_cells().empty()) return 100;
+    // Red is a display overlay: the grid and serialized PGM remain occupied/black.
+    if (occupancy->map().at(2, 2) != agt_map_studio::GridMap::kOccupied) return 88;
+    if (!window.save_occupancy_map(temp.filePath("saved"), &error) ||
+        qGray(QImage(temp.filePath("saved/map.pgm")).pixel(2, 3)) != 0) return 89;
+    if (!window.open_occupancy_map(temp.filePath("navigation/map.yaml"), &error) ||
+        occupancy->linked_inspection_enabled() || !occupancy->highlighted_cells().empty()) return 90;
+    occupancy->inspect_xy_requested(0., 0., .5, .5); // Hand-picked files cannot reactivate linking.
+    if (!occupancy->highlighted_cells().empty()) return 91;
+    if (!window.open_mapping_package(temp.path(), &error)) return 92;
+    if (!window.open_pcd(temp.filePath("map.pcd"), &error) || occupancy->linked_inspection_enabled()) return 93;
+    // Also support the published package layout.
+    QDir(temp.path()).mkpath("localization");
+    if (!QFile::rename(temp.filePath("map.pcd"), temp.filePath("localization/global_map.pcd"))) return 94;
+    if (!window.open_mapping_package(temp.path(), &error) || !occupancy->linked_inspection_enabled()) return 95;
+    // Erase the existing reverse-linked selection without redrawing a rectangle.
+    if (window.findChild<QAction*>(QStringLiteral("erase_current_2d_selection"))) return 109;
+    auto *erase_selection = window.findChild<QAction*>(QStringLiteral("erase_rect"));
+    if (!erase_selection || viewer->select_xy_region(0., 0., .5, .5) != 2) return 103;
+    const auto original_cloud = viewer->cloud().xyz;
+    erase_selection->trigger();
+    if (!occupancy->highlighted_cells().empty() || viewer->cloud().xyz != original_cloud) return 104;
+    if (!window.save_occupancy_map(temp.filePath("erased"), &error)) return 105;
+    const QImage erased(temp.filePath("erased/map.pgm"));
+    if (qGray(erased.pixel(2, 3)) != 254 || qGray(erased.pixel(3, 3)) != 0) return 106;
+    QMetaObject::invokeMethod(&window, "show_2d_view", Qt::DirectConnection);
+    QMetaObject::invokeMethod(&window, "undo_edit", Qt::DirectConnection);
+    if (!window.save_occupancy_map(temp.filePath("erase_undone"), &error) ||
+        qGray(QImage(temp.filePath("erase_undone/map.pgm")).pixel(2, 3)) != 0) return 107;
+    QMetaObject::invokeMethod(&window, "redo_edit", Qt::DirectConnection);
+    if (!window.save_occupancy_map(temp.filePath("erase_redone"), &error) ||
+        qGray(QImage(temp.filePath("erase_redone/map.pgm")).pixel(2, 3)) != 254) return 108;
+    // Without a highlighted selection the same action only enters drag-to-erase mode.
+    occupancy->set_mode(agt_map_studio::OccupancyInteractionMode::View);
+    erase_selection->trigger();
+    if (occupancy->mode() != agt_map_studio::OccupancyInteractionMode::Erase ||
+        !occupancy->highlighted_cells().empty() ||
+        occupancy->map().at(3, 2) != agt_map_studio::GridMap::kOccupied) return 110;
+    // Click markers must work for both free and unknown cells, even below cell size.
+    auto *marker = window.findChild<QAction*>(QStringLiteral("mark_obstacle"));
+    if (!marker) return 111;
+    occupancy->set_obstacle_width(0.01);
+    marker->trigger();
+    occupancy->resize(600, 600);
+    occupancy->fit_map();
+    const double marker_zoom = occupancy->zoom();
+    const QPointF marker_cell((600 - 6 * marker_zoom) / 2 + 2.5 * marker_zoom,
+                             (600 - 6 * marker_zoom) / 2 + 3.5 * marker_zoom);
+    for (int row = 0; row < 2; ++row) {
+      const QPointF position = marker_cell - QPointF(0, row * marker_zoom);
+      QMouseEvent press(QEvent::MouseButtonPress, position, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+      QMouseEvent release(QEvent::MouseButtonRelease, position, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+      QApplication::sendEvent(occupancy, &press);
+      QApplication::sendEvent(occupancy, &release);
+      const QString output = temp.filePath(QStringLiteral("marker_%1").arg(row));
+      if (!window.save_occupancy_map(output, &error) ||
+          qGray(QImage(output + "/map.pgm").pixel(2, 3 - row)) != 0) return 112;
+    }
+    if (viewer->cloud().xyz != original_cloud) return 113;
+    QMetaObject::invokeMethod(&window, "undo_edit", Qt::DirectConnection);
+    if (!window.save_occupancy_map(temp.filePath("marker_undone"), &error) ||
+        qGray(QImage(temp.filePath("marker_undone/map.pgm")).pixel(2, 2)) != 205) return 114;
+    QMetaObject::invokeMethod(&window, "redo_edit", Qt::DirectConnection);
+    if (!window.save_occupancy_map(temp.filePath("marked"), &error) ||
+        qGray(QImage(temp.filePath("marked/map.pgm")).pixel(2, 2)) != 0) return 115;
+    if (!window.open_occupancy_map(temp.filePath("marked/map.yaml"), &error) ||
+        occupancy->map().at(2, 3) != agt_map_studio::GridMap::kOccupied) return 116;
+    std::cout << "Package-only XY linking, all heights, negative origin, reverse highlighting, empty selection, single click and unchanged saved raster passed\n";
+    return 0;
+  }
   if (argc == 2 && QString::fromLocal8Bit(argv[1]) == "--check-file-dialog") {
     QTemporaryDir temp;
     for (int i = 0; i < 160; ++i) {

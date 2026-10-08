@@ -46,6 +46,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <exception>
+#include <cmath>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
@@ -67,13 +68,13 @@ constexpr const char *kManagerPackage = "agt_map_manager";
 MainWindow::MainWindow(const QString &config_path, QWidget *parent)
     : QMainWindow(parent), viewer_(new PointCloudViewer(this)),
       occupancy_viewer_(new OccupancyViewer(this)),
-      view_stack_(new QStackedWidget(this)) {
+      view_splitter_(new QSplitter(Qt::Horizontal, this)) {
   setWindowTitle(QStringLiteral("AGT Map Studio"));
   resize(1480, 900);
-  view_stack_->addWidget(viewer_);
-  view_stack_->addWidget(occupancy_viewer_);
-  view_stack_->setCurrentWidget(viewer_);
-  setCentralWidget(view_stack_);
+  view_splitter_->addWidget(occupancy_viewer_);
+  view_splitter_->addWidget(viewer_);
+  occupancy_viewer_->hide();
+  setCentralWidget(view_splitter_);
   viewer_->set_selection_manager(&selection_manager_);
   occupancy_viewer_->set_refinement_model(&refinement_model_);
   default_map_root_ = QProcessEnvironment::systemEnvironment().value(
@@ -85,6 +86,22 @@ MainWindow::MainWindow(const QString &config_path, QWidget *parent)
   workflow_panel_->set_publish_target(session_.publish_target());
 
   connect(viewer_, &PointCloudViewer::stats_changed, this, &MainWindow::show_stats);
+  connect(viewer_, &PointCloudViewer::stats_changed, this, [this]() { sync_xy_highlight(); });
+  connect(occupancy_viewer_, &OccupancyViewer::inspection_unavailable, this, [this]() {
+    statusBar()->showMessage(QStringLiteral("Open a map package containing matching point cloud and 2D map. Separate files do not support linked inspection."), 7000);
+  });
+  connect(occupancy_viewer_, &OccupancyViewer::clear_inspection_requested, this, [this]() {
+    selection_manager_.clear_selection();
+    viewer_->mark_edit_state_dirty();
+  });
+  connect(occupancy_viewer_, &OccupancyViewer::inspect_xy_requested, this,
+          [this](double x0, double y0, double x1, double y1) {
+    if (!xy_link_enabled_) return;
+    const auto count = viewer_->select_xy_region(x0, y0, x1, y1);
+    show_linked_view();
+    statusBar()->showMessage(count ? QStringLiteral("Linked XY selection: %1 points across all heights").arg(count)
+                                  : QStringLiteral("No point cloud points in the selected XY region"), 7000);
+  });
   connect(viewer_, &PointCloudViewer::delete_requested_outside_delete_mode, this, [this]() {
     statusBar()->showMessage(
         QStringLiteral("Switch to Delete mode (toolbar or X) before pressing Delete"), 4000);
@@ -208,6 +225,7 @@ void MainWindow::create_actions() {
   auto *clear_selection_action = new QAction(QStringLiteral("Clear Selection"), this);
   connect(clear_selection_action, &QAction::triggered, this, [this]() {
     selection_manager_.clear_selection();
+    occupancy_viewer_->set_highlighted_cells({});
     viewer_->cancel_pending_polygon();
     viewer_->mark_edit_state_dirty();
   });
@@ -280,7 +298,8 @@ void MainWindow::create_actions() {
   view_group->setExclusive(true);
   auto *show_3d_action = new QAction(QStringLiteral("3D Point Cloud"), this);
   auto *show_2d_action = new QAction(QStringLiteral("2D Navigation Map"), this);
-  for (auto *action : {show_3d_action, show_2d_action}) {
+  auto *linked_action = new QAction(QStringLiteral("2D / 3D Linked View"), this);
+  for (auto *action : {show_3d_action, show_2d_action, linked_action}) {
     action->setCheckable(true);
     view_group->addAction(action);
   }
@@ -291,6 +310,9 @@ void MainWindow::create_actions() {
   connect(show_2d_action, &QAction::triggered, this, &MainWindow::show_2d_view);
   view_menu->addAction(show_3d_action);
   view_menu->addAction(show_2d_action);
+  linked_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_3));
+  connect(linked_action, &QAction::triggered, this, &MainWindow::show_linked_view);
+  view_menu->addAction(linked_action);
   view_menu->addSeparator();
   view_menu->addAction(reset_action);
   view_menu->addAction(isometric_action);
@@ -424,8 +446,10 @@ void MainWindow::create_actions() {
   };
   const ModeEntry entries[] = {
       {"View", OccupancyInteractionMode::View, "Pan/zoom only"},
-      {"Erase rect", OccupancyInteractionMode::Erase, "Drag: occupied -> free"},
+      {"Linked Inspect", OccupancyInteractionMode::InspectXY, "Click a cell or drag a rectangle to highlight points in the same XY region across all heights"},
+      {"Erase rect", OccupancyInteractionMode::Erase, "With a highlighted selection: clear selected 2D obstacles. Without a selection: drag to erase. Does not delete 3D points."},
       {"Obstacle line", OccupancyInteractionMode::Obstacle, "Drag a line of given width -> occupied"},
+      {"Mark obstacle", OccupancyInteractionMode::ObstacleMarker, "Click to mark a missed pole or obstacle as occupied. Width (m) sets the square footprint, rounded up to whole cells (at least one cell)."},
       {"Free rect", OccupancyInteractionMode::FreeRectangle, "Drag: occupied and unknown -> free"},
       {"Free polygon", OccupancyInteractionMode::FreePolygon, "Click vertices, double-click: fill free"},
       {"Occupied polygon", OccupancyInteractionMode::OccupiedPolygon, "Click vertices, double-click: fill occupied"},
@@ -435,13 +459,21 @@ void MainWindow::create_actions() {
   bool first = true;
   for (const auto &entry : entries) {
     auto *action = occupancy_toolbar_->addAction(QString::fromUtf8(entry.label));
+    if (entry.mode == OccupancyInteractionMode::Erase)
+      action->setObjectName(QStringLiteral("erase_rect"));
+    if (entry.mode == OccupancyInteractionMode::ObstacleMarker)
+      action->setObjectName(QStringLiteral("mark_obstacle"));
     action->setToolTip(QString::fromUtf8(entry.tip));
     action->setCheckable(true);
     occupancy_group->addAction(action);
     if (first) action->setChecked(true);
     first = false;
     const OccupancyInteractionMode mode = entry.mode;
-    connect(action, &QAction::triggered, this, [this, mode]() { set_occupancy_mode(mode); });
+    connect(action, &QAction::triggered, this, [this, mode]() {
+      set_occupancy_mode(mode);
+      if (mode == OccupancyInteractionMode::Erase && !occupancy_viewer_->highlighted_cells().empty())
+        erase_selected_2d_cells();
+    });
   }
   occupancy_toolbar_->addSeparator();
   occupancy_toolbar_->addWidget(new QLabel(QStringLiteral("Width (m):"), this));
@@ -450,7 +482,7 @@ void MainWindow::create_actions() {
   width_spin->setSingleStep(0.05);
   width_spin->setDecimals(2);
   width_spin->setValue(0.20);
-  width_spin->setToolTip(QStringLiteral("Obstacle line width in meters"));
+  width_spin->setToolTip(QStringLiteral("Obstacle line width or marker footprint in meters; markers use at least one cell"));
   occupancy_toolbar_->addWidget(width_spin);
   connect(width_spin, qOverload<double>(&QDoubleSpinBox::valueChanged), occupancy_viewer_,
           &OccupancyViewer::set_obstacle_width);
@@ -615,6 +647,7 @@ bool MainWindow::open_pcd(const QString &path, QString *error) {
     if (error) *error = QStringLiteral("Switch cancelled. Current edits preserved.");
     return false;
   }
+  disable_xy_link();
   refinement_model_.clear();
   occupancy_viewer_->clear_map();
   saved_2d_directory_.clear();
@@ -636,15 +669,37 @@ bool MainWindow::open_pcd(const QString &path, QString *error) {
 
 bool MainWindow::open_mapping_package(const QString &directory, QString *error) {
   const QDir dir(directory);
+  // Reject malformed package rasters before replacing the current cloud.
+  const QString package_yaml = dir.filePath(QStringLiteral("navigation/map.yaml"));
+  if (QFileInfo::exists(package_yaml)) {
+    GridMap probe;
+    MapYamlMetadata metadata;
+    std::string detail;
+    if (!MapYamlLoader::load(package_yaml.toStdString(), &probe, &metadata, &detail)) {
+      if (error) *error = QString::fromStdString(detail);
+      return false;
+    }
+  }
   if (dir.exists(QStringLiteral("map.pcd")) && dir.exists(QStringLiteral("manifest.yaml"))) {
     if (!open_pcd(dir.filePath(QStringLiteral("map.pcd")), error)) return false;
     set_source(dir.filePath(QStringLiteral("map.pcd")), dir.absolutePath());
+    if (dir.exists(QStringLiteral("navigation/map.yaml"))) {
+      if (!load_navigation_dir_into_2d(dir.filePath(QStringLiteral("navigation")), error)) return false;
+      linked_package_root_ = dir.canonicalPath();
+      xy_link_enabled_ = true;
+      occupancy_viewer_->set_linked_inspection_enabled(true);
+      session_.mark_done(WorkflowSession::Navigation, dir.filePath(QStringLiteral("navigation")),
+                        WorkflowSession::sha256_file(dir.filePath(QStringLiteral("navigation/map.pgm"))),
+                        QStringLiteral("imported from map package"));
+      refresh_workflow();
+    }
     statusBar()->showMessage(QStringLiteral("Opened mapping package: %1").arg(directory), 6000);
     return true;
   }
   const QString global_map = dir.filePath(QStringLiteral("localization/global_map.pcd"));
   if (QFileInfo::exists(global_map)) {
     if (!open_pcd(global_map, error)) return false;
+    set_source(global_map, dir.absolutePath());
     // Re-derive publish identity from maps/<map_id>/<version>.
     session_.publish_target().map_id = QFileInfo(dir.absolutePath()).dir().dirName();
     session_.publish_target().map_version = QStringLiteral("%1-studio_%2")
@@ -654,6 +709,9 @@ bool MainWindow::open_mapping_package(const QString &directory, QString *error) 
     if (QFileInfo::exists(map_yaml)) {
       QString map_error;
       if (load_navigation_dir_into_2d(dir.filePath(QStringLiteral("navigation")), &map_error)) {
+        linked_package_root_ = dir.canonicalPath();
+        xy_link_enabled_ = true;
+        occupancy_viewer_->set_linked_inspection_enabled(true);
         // Existing layers are consistent with the loaded PCD by construction;
         // treat them as fresh navigation output so 2D-only edits can be
         // patched and published without regenerating.
@@ -666,6 +724,7 @@ bool MainWindow::open_mapping_package(const QString &directory, QString *error) 
                              QStringLiteral("imported from map package"));
         }
       }
+      if (!map_error.isEmpty()) { if (error) *error = map_error; return false; }
       show_3d_view();
     }
     refresh_workflow();
@@ -688,6 +747,8 @@ bool MainWindow::load_navigation_dir_into_2d(const QString &directory, QString *
     if (error) *error = QString::fromStdString(loader_error);
     return false;
   }
+  if (QDir(directory).canonicalPath() != QDir(linked_package_root_).filePath("navigation"))
+    disable_xy_link();
   const std::vector<RefinementOperation> previous = refinement_model_.history();
   RefinementModel restored;
   restored.set_base_map(map, metadata);
@@ -725,6 +786,19 @@ bool MainWindow::replay_2d_history(const std::vector<RefinementOperation> &histo
     std::unique_ptr<GridCommand> command;
     if (entry.type == "erase_rectangle" && entry.geometry.size() >= 2U) {
       command = EraseRectangleCommand::create(refinement_model_, entry.geometry[0], entry.geometry[1]);
+    } else if (entry.type == "erase_selected_cells") {
+      const auto &map = refinement_model_.base_map();
+      if (std::abs(entry.width_m - map.resolution()) > 1e-6) {
+        all_ok = false;  // Do not reinterpret sparse cells at a different resolution.
+        continue;
+      }
+      std::vector<std::size_t> cells;
+      for (const auto &point : entry.geometry) {
+        int x, y;
+        if (map.world_to_pixel(point.x, point.y, &x, &y))
+          cells.push_back(static_cast<std::size_t>(y) * map.width() + x);
+      }
+      command = EraseRectangleCommand::create_cells(refinement_model_, std::move(cells));
     } else if (entry.type == "draw_obstacle" && entry.geometry.size() >= 2U) {
       command = DrawObstacleCommand::create(refinement_model_, entry.geometry[0], entry.geometry[1], entry.width_m);
     } else if (entry.type == "forbidden_polygon") {
@@ -771,6 +845,7 @@ bool MainWindow::open_occupancy_map(const QString &path, QString *error) {
     if (error) *error = QStringLiteral("Switch cancelled. Current edits preserved.");
     return false;
   }
+  disable_xy_link();
   refinement_model_ = std::move(restored);
   saved_2d_fingerprint_ = QString::fromStdString(refinement_model_.active_fingerprint());
   saved_2d_directory_ = QFileInfo::exists(history) ? QFileInfo(path).absolutePath() : QString();
@@ -1260,7 +1335,7 @@ void MainWindow::select_height_band_dialog() {
 void MainWindow::reset_camera() { viewer_->reset_camera(); }
 
 void MainWindow::undo_edit() {
-  if (view_stack_->currentWidget() == occupancy_viewer_) {
+  if (viewer_->isHidden() || (!occupancy_viewer_->isHidden() && occupancy_viewer_->hasFocus())) {
     if (refinement_model_.undo()) refresh_occupancy_view();
   } else if (selection_manager_.undo()) {
     viewer_->mark_edit_state_dirty();
@@ -1269,7 +1344,7 @@ void MainWindow::undo_edit() {
 }
 
 void MainWindow::redo_edit() {
-  if (view_stack_->currentWidget() == occupancy_viewer_) {
+  if (viewer_->isHidden() || (!occupancy_viewer_->isHidden() && occupancy_viewer_->hasFocus())) {
     if (refinement_model_.redo()) refresh_occupancy_view();
   } else if (selection_manager_.redo()) {
     viewer_->mark_edit_state_dirty();
@@ -1278,7 +1353,7 @@ void MainWindow::redo_edit() {
 }
 
 void MainWindow::delete_selected() {
-  if (view_stack_->currentWidget() != viewer_) return;
+  if (viewer_->isHidden() || (!occupancy_viewer_->isHidden() && occupancy_viewer_->hasFocus())) return;
   if (viewer_->mode() != InteractionMode::Delete) {
     statusBar()->showMessage(QStringLiteral("Switch to Delete mode (toolbar or X) first"), 3000);
     return;
@@ -1306,14 +1381,17 @@ void MainWindow::set_front_view() { viewer_->front_view(); }
 void MainWindow::set_top_view() { viewer_->top_view(); }
 
 void MainWindow::show_3d_view() {
-  view_stack_->setCurrentWidget(viewer_);
+  viewer_->show();
+  occupancy_viewer_->hide();
   if (occupancy_toolbar_) occupancy_toolbar_->setVisible(false);
   if (toolbar_3d_) toolbar_3d_->setVisible(true);
   statusBar()->showMessage(viewer_->stats_text());
 }
 
 void MainWindow::show_2d_view() {
-  view_stack_->setCurrentWidget(occupancy_viewer_);
+  sync_xy_highlight();
+  viewer_->hide();
+  occupancy_viewer_->show();
   if (occupancy_toolbar_) occupancy_toolbar_->setVisible(true);
   if (toolbar_3d_) toolbar_3d_->setVisible(false);
   statusBar()->showMessage(refinement_model_.has_map()
@@ -1321,7 +1399,77 @@ void MainWindow::show_2d_view() {
                                : QStringLiteral("2D view: no layers yet - run step 3 or open a map.yaml"));
 }
 
+void MainWindow::disable_xy_link() {
+  xy_link_enabled_ = false;
+  xy_highlight_cache_valid_ = false;
+  linked_selected_indices_.clear();
+  linked_package_root_.clear();
+  occupancy_viewer_->set_linked_inspection_enabled(false);
+}
+
+void MainWindow::sync_xy_highlight() {
+  if (!xy_link_enabled_ || !viewer_->has_cloud() || !occupancy_viewer_->has_map()) return;
+  const auto &map = occupancy_viewer_->map();
+  const auto &xyz = viewer_->cloud().xyz;
+  const auto &indices = selection_manager_.selected_indices();
+  // FPS/status updates must not redraw a rectangle as a sparse point footprint.
+  // Rebuild only when the actual 3D selection changes.
+  if (xy_highlight_cache_valid_ && indices == linked_selected_indices_) return;
+  linked_selected_indices_ = indices;
+  xy_highlight_cache_valid_ = true;
+  std::vector<std::size_t> cells;
+  for (const auto i : indices) {
+    int x, y;
+    if (map.world_to_pixel(xyz[3*i], xyz[3*i+1], &x, &y))
+      cells.push_back(static_cast<std::size_t>(y) * map.width() + x);
+  }
+  occupancy_viewer_->set_highlighted_cells(std::move(cells));
+}
+
+void MainWindow::show_linked_view() {
+  if (!xy_link_enabled_) {
+    statusBar()->showMessage(QStringLiteral("Open a map package containing matching point cloud and 2D map. Separate files do not support linked inspection."), 7000);
+    return;
+  }
+  // Inspection should rotate on left drag, even after a 3D selection/delete
+  // operation. Changing mode keeps the selected points and XY overlay intact.
+  set_mode_navigate();
+  sync_xy_highlight();
+  occupancy_viewer_->show();
+  viewer_->show();
+  occupancy_toolbar_->show();
+  toolbar_3d_->show();
+}
+
 void MainWindow::set_occupancy_mode(OccupancyInteractionMode mode) { occupancy_viewer_->set_mode(mode); }
+
+void MainWindow::erase_selected_2d_cells() {
+  if (!xy_link_enabled_ || !refinement_model_.has_map()) {
+    statusBar()->showMessage(QStringLiteral("Open a matching map package and select a region first"), 5000);
+    return;
+  }
+  const auto cells = occupancy_viewer_->highlighted_cells();
+  if (cells.empty()) {
+    statusBar()->showMessage(QStringLiteral("Select a region in the 2D or 3D view first"), 5000);
+    return;
+  }
+  auto command = EraseRectangleCommand::create_cells(refinement_model_, cells);
+  const auto changed = command ? command->operation().changes.size() : 0;
+  if (command) {
+    std::string error;
+    if (!refinement_model_.execute(std::move(command), &error)) {
+      QMessageBox::critical(this, QStringLiteral("Erase Selection Failed"), QString::fromStdString(error));
+      return;
+    }
+  }
+  selection_manager_.clear_selection();
+  occupancy_viewer_->set_highlighted_cells({});
+  viewer_->mark_edit_state_dirty();
+  refresh_occupancy_view();
+  occupancy_viewer_->setFocus();
+  statusBar()->showMessage(changed ? QStringLiteral("Changed %1 occupied cells to free. Undo is available.").arg(changed)
+                                 : QStringLiteral("No occupied cells in the selection. Highlight cleared; free and unknown cells are unchanged."), 7000);
+}
 
 void MainWindow::apply_erase_rectangle(double min_x, double min_y, double max_x, double max_y) {
   if (!refinement_model_.has_map()) return;
@@ -1852,7 +2000,7 @@ void MainWindow::show_controls() {
           "  Ctrl+Z / Ctrl+Y: undo / redo\n\n"
           "2D view (Ctrl+2)\n"
           "  Left drag in View mode: pan; wheel: zoom; F: fit; R: reset\n"
-          "  Erase rect: drag to clear occupied cells; Obstacle line: drag to mark obstacles\n"
+          "  Erase rect: clear highlighted occupied cells, or drag when no selection; Obstacle line: drag to mark obstacles\n"
           "  Free rect: drag to fill occupied and unknown cells as free\n"
           "  Free/Occupied/Unknown polygon: click vertices; double-click/Enter: close; Backspace: undo vertex\n"
           "  Forbidden zone: export a keepout polygon without changing grid cells\n"

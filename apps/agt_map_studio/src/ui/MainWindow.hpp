@@ -9,7 +9,7 @@
 #include "workflow/WorkflowSession.hpp"
 
 #include <QMainWindow>
-#include <QStackedWidget>
+#include <QSplitter>
 #include <QString>
 #include <QVector>
 
@@ -82,7 +82,9 @@ private slots:
   void set_top_view();
   void show_3d_view();
   void show_2d_view();
+  void show_linked_view();
   void set_occupancy_mode(OccupancyInteractionMode mode);
+  void erase_selected_2d_cells();
   void toggle_axis(bool checked);
   void toggle_background(bool checked);
   void toggle_height_coloring(bool checked);
@@ -104,6 +106,8 @@ private:
   using StepFn = std::function<void()>;
 
   void create_actions();
+  void sync_xy_highlight();
+  void disable_xy_link();
   void create_workflow_dock();
   void load_config(const QString &path);
   void apply_erase_rectangle(double min_x, double min_y, double max_x, double max_y);
@@ -132,7 +136,11 @@ private:
 
   PointCloudViewer *viewer_ = nullptr;
   OccupancyViewer *occupancy_viewer_ = nullptr;
-  QStackedWidget *view_stack_ = nullptr;
+  QSplitter *view_splitter_ = nullptr;
+  bool xy_link_enabled_ = false;
+  QString linked_package_root_;
+  std::vector<std::size_t> linked_selected_indices_;
+  bool xy_highlight_cache_valid_ = false;
   QToolBar *toolbar_3d_ = nullptr;
   QToolBar *occupancy_toolbar_ = nullptr;
   QDockWidget *workflow_dock_ = nullptr;

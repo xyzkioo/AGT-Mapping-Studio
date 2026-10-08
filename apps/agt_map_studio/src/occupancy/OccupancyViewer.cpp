@@ -25,6 +25,8 @@ void OccupancyViewer::set_refinement_model(RefinementModel *model) {
 }
 
 void OccupancyViewer::set_map(GridMap map) {
+  highlighted_cells_.clear();
+  highlight_image_ = QImage();
   map_ = std::move(map);
   rebuild_image();
   fit_map();
@@ -37,6 +39,8 @@ void OccupancyViewer::set_map(GridMap map) {
 }
 
 void OccupancyViewer::clear_map() {
+  highlighted_cells_.clear();
+  highlight_image_ = QImage();
   map_.clear();
   image_ = QImage();
   cursor_status_.clear();
@@ -61,9 +65,11 @@ void OccupancyViewer::set_mode(OccupancyInteractionMode mode) {
 
 QString OccupancyViewer::mode_name(OccupancyInteractionMode mode) {
   switch (mode) {
+    case OccupancyInteractionMode::InspectXY: return QStringLiteral("Inspect XY");
     case OccupancyInteractionMode::View: return QStringLiteral("View");
     case OccupancyInteractionMode::Erase: return QStringLiteral("Erase");
     case OccupancyInteractionMode::Obstacle: return QStringLiteral("Obstacle");
+    case OccupancyInteractionMode::ObstacleMarker: return QStringLiteral("Mark obstacle");
     case OccupancyInteractionMode::Forbidden: return QStringLiteral("Forbidden");
     case OccupancyInteractionMode::FreeRectangle: return QStringLiteral("Free rectangle");
     case OccupancyInteractionMode::FreePolygon: return QStringLiteral("Free polygon");
@@ -115,6 +121,31 @@ void OccupancyViewer::rebuild_image() {
   }
 }
 
+void OccupancyViewer::set_linked_inspection_enabled(bool enabled) {
+  linked_inspection_enabled_ = enabled;
+  if (!enabled) set_highlighted_cells({});
+}
+
+void OccupancyViewer::set_highlighted_cells(std::vector<std::size_t> cells) {
+  std::sort(cells.begin(), cells.end());
+  cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+  cells.erase(std::remove_if(cells.begin(), cells.end(), [this](std::size_t i) {
+    return i >= map_.cells().size();
+  }), cells.end());
+  if (cells == highlighted_cells_) return;
+  highlighted_cells_ = std::move(cells);
+  highlight_image_ = QImage();
+  if (!map_.empty() && !highlighted_cells_.empty()) {
+    highlight_image_ = QImage(map_.width(), map_.height(), QImage::Format_ARGB32);
+    highlight_image_.fill(Qt::transparent);
+    for (const auto i : highlighted_cells_) {
+      highlight_image_.setPixel(i % map_.width(), map_.height() - 1 - i / map_.width(),
+                               qRgba(240, 35, 35, 255));
+    }
+  }
+  update();
+}
+
 void OccupancyViewer::reset_view() {
   zoom_ = 1.0;
   pan_ = QPointF((width() - image_.width()) * 0.5,
@@ -142,6 +173,7 @@ void OccupancyViewer::paintEvent(QPaintEvent *) {
     painter.translate(pan_);
     painter.scale(zoom_, zoom_);
     painter.drawImage(QPointF(0.0, 0.0), image_);
+    painter.drawImage(QPointF(0.0, 0.0), highlight_image_);
     painter.restore();
   } else {
     painter.setPen(Qt::white);
@@ -176,7 +208,8 @@ void OccupancyViewer::paintEvent(QPaintEvent *) {
     painter.setPen(QPen(QColor(230, 30, 30, 230), 2, Qt::DashLine));
     painter.setBrush(QColor(230, 30, 30, 45));
     if ((mode_ == OccupancyInteractionMode::Erase ||
-         mode_ == OccupancyInteractionMode::FreeRectangle) && editing_drag_) {
+         mode_ == OccupancyInteractionMode::FreeRectangle ||
+         mode_ == OccupancyInteractionMode::InspectXY) && editing_drag_) {
       if (mode_ == OccupancyInteractionMode::FreeRectangle) {
         painter.setPen(QPen(QColor(40, 170, 80, 230), 2, Qt::DashLine));
         painter.setBrush(QColor(40, 170, 80, 45));
@@ -224,6 +257,10 @@ void OccupancyViewer::resizeEvent(QResizeEvent *event) {
 void OccupancyViewer::keyPressEvent(QKeyEvent *event) {
   if (event->key() == Qt::Key_Escape) {
     cancel_polygon();
+    if (linked_inspection_enabled_ && mode_ == OccupancyInteractionMode::InspectXY) {
+      emit clear_inspection_requested();
+      set_highlighted_cells({});
+    }
     event->accept();
     return;
   }
@@ -253,7 +290,11 @@ void OccupancyViewer::keyPressEvent(QKeyEvent *event) {
 
 void OccupancyViewer::mousePressEvent(QMouseEvent *event) {
   setFocus();
-  if (event->button() == Qt::LeftButton && mode_ == OccupancyInteractionMode::View) {
+  if (event->button() == Qt::LeftButton && mode_ == OccupancyInteractionMode::InspectXY &&
+      !linked_inspection_enabled_) {
+    emit inspection_unavailable();
+  } else if (event->button() == Qt::RightButton ||
+             (event->button() == Qt::LeftButton && mode_ == OccupancyInteractionMode::View)) {
     panning_ = true;
     last_mouse_position_ = event->pos();
   } else if (event->button() == Qt::LeftButton && occupancy_mode_uses_polygon(mode_)) {
@@ -292,7 +333,7 @@ void OccupancyViewer::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void OccupancyViewer::mouseReleaseEvent(QMouseEvent *event) {
-  if (event->button() == Qt::LeftButton && panning_) panning_ = false;
+  if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) panning_ = false;
   if (event->button() == Qt::LeftButton && editing_drag_) {
     edit_current_screen_ = event->pos();
     GridWorldPoint first;
@@ -300,7 +341,39 @@ void OccupancyViewer::mouseReleaseEvent(QMouseEvent *event) {
     const bool valid = screen_to_world(QPointF(edit_start_screen_), &first) &&
                        screen_to_world(QPointF(edit_current_screen_), &second);
     editing_drag_ = false;
-    if (valid && mode_ == OccupancyInteractionMode::Erase) {
+    if (valid && mode_ == OccupancyInteractionMode::InspectXY && linked_inspection_enabled_) {
+      // screen_to_world returns cell corners. Include both endpoint cells,
+      // even for a single click, and use half-open XY bounds in the cloud.
+      const double max_x = std::max(first.x, second.x) + map_.resolution();
+      const double max_y = std::max(first.y, second.y) + map_.resolution();
+      std::vector<std::size_t> cells;
+      int x0, y0, x1, y1;
+      if (map_.world_to_pixel(first.x, first.y, &x0, &y0) &&
+          map_.world_to_pixel(second.x, second.y, &x1, &y1)) {
+        for (int y = std::min(y0, y1); y <= std::max(y0, y1); ++y)
+          for (int x = std::min(x0, x1); x <= std::max(x0, x1); ++x)
+            cells.push_back(static_cast<std::size_t>(y) * map_.width() + x);
+      }
+      emit inspect_xy_requested(std::min(first.x, second.x), std::min(first.y, second.y),
+                                max_x, max_y);
+      set_highlighted_cells(std::move(cells));
+    } else if (valid && mode_ == OccupancyInteractionMode::ObstacleMarker &&
+               (edit_current_screen_ - edit_start_screen_).manhattanLength() <= 4) {
+      // Snap to whole cells, with a minimum footprint of one cell. Reuse
+      // occupied polygon edits so history, undo and patch export stay identical.
+      const double resolution = map_.resolution();
+      const int cells = std::max(1, static_cast<int>(std::ceil(obstacle_width_m_ / resolution)));
+      const double offset = ((cells - 1) / 2) * resolution;
+      const double x0 = first.x - offset;
+      const double y0 = first.y - offset;
+      const double x1 = x0 + cells * resolution;
+      const double y1 = y0 + cells * resolution;
+      emit clear_inspection_requested();
+      set_highlighted_cells({});
+      emit fill_polygon_requested(
+          QVector<QPointF>{QPointF(x0, y0), QPointF(x1, y0),
+                          QPointF(x1, y1), QPointF(x0, y1)}, GridMap::kOccupied);
+    } else if (valid && mode_ == OccupancyInteractionMode::Erase) {
       emit erase_rectangle_requested(std::min(first.x, second.x),
                                      std::min(first.y, second.y),
                                      std::max(first.x, second.x),

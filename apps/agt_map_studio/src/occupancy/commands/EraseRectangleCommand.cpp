@@ -7,6 +7,30 @@
 
 namespace agt_map_studio {
 
+std::unique_ptr<EraseRectangleCommand> EraseRectangleCommand::create_cells(
+    const RefinementModel &model, std::vector<std::size_t> indices) {
+  if (!model.has_map()) return nullptr;
+  std::sort(indices.begin(), indices.end());
+  indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+  const auto &map = model.base_map();
+  RefinementOperation operation;
+  operation.id = model.next_operation_id();
+  operation.type = "erase_selected_cells";
+  operation.timestamp = RefinementModel::timestamp_now();
+  operation.width_m = map.resolution();
+  for (const auto index : indices) {
+    if (index >= map.cells().size()) continue;
+    const auto before = model.effective_at_index(index);
+    if (before != GridMap::kOccupied) continue;
+    operation.changes.push_back({index, before, GridMap::kFree});
+    const auto corner = map.pixel_to_world(index % map.width(), index / map.width());
+    operation.geometry.push_back({corner.x + map.resolution() * .5,
+                                  corner.y + map.resolution() * .5});
+  }
+  if (operation.changes.empty()) return nullptr;
+  return std::make_unique<EraseRectangleCommand>(std::move(operation));
+}
+
 std::unique_ptr<EraseRectangleCommand> EraseRectangleCommand::create(
     const RefinementModel &model, GridWorldPoint first, GridWorldPoint second) {
   if (!model.has_map()) return nullptr;

@@ -8,6 +8,7 @@
 
 #include <filesystem>
 #include <algorithm>
+#include <yaml-cpp/yaml.h>
 
 namespace agt_map_studio {
 namespace {
@@ -36,6 +37,45 @@ TEST(RefinementModelTest, EraseUndoRedoUsesSparseCellChanges) {
   EXPECT_EQ(model.effective_at(1, 1), GridMap::kOccupied);
   ASSERT_TRUE(model.redo());
   EXPECT_EQ(model.effective_at(2, 1), GridMap::kFree);
+}
+
+TEST(RefinementModelTest, SelectedCellEraseStaysSparseAndRoundTripsHistoryAndPatch) {
+  auto map = make_base_map();
+  map.cells()[0] = GridMap::kUnknown;
+  map.cells()[8] = GridMap::kOccupied;
+  RefinementModel model;
+  model.set_base_map(map, MapYamlMetadata());
+  auto command = EraseRectangleCommand::create_cells(model, {0, 6, 6, 8, 24, 999});
+  ASSERT_TRUE(command);
+  ASSERT_EQ(command->operation().changes.size(), 2U);
+  std::string error;
+  ASSERT_TRUE(model.execute(std::move(command), &error)) << error;
+  EXPECT_EQ(model.effective_at_index(0), GridMap::kUnknown);
+  EXPECT_EQ(model.effective_at_index(6), GridMap::kFree);
+  EXPECT_EQ(model.effective_at_index(7), GridMap::kOccupied); // Gap inside the bounding box.
+  EXPECT_EQ(model.effective_at_index(8), GridMap::kFree);
+  EXPECT_EQ(model.effective_at_index(24), GridMap::kFree);
+  EXPECT_FALSE(EraseRectangleCommand::create_cells(model, {0, 6, 8, 24}));
+  const auto directory = std::filesystem::temp_directory_path() / "agt_selected_cells_erase_test";
+  std::filesystem::create_directories(directory);
+  ASSERT_TRUE(model.save_refinement_yaml((directory / "history.yaml").string(), &error)) << error;
+  ASSERT_TRUE(model.write_navigation_patch((directory / "patch.yaml").string(), &error)) << error;
+  const auto patch = YAML::LoadFile((directory / "patch.yaml").string());
+  ASSERT_EQ(patch["edits"].size(), 2U);
+  EXPECT_EQ(patch["edits"][0]["mode"].as<std::string>(), "free");
+  EXPECT_DOUBLE_EQ(patch["edits"][0]["polygon_m"][0][0].as<double>(), 1.);
+  EXPECT_DOUBLE_EQ(patch["edits"][1]["polygon_m"][0][0].as<double>(), 3.);
+  RefinementModel restored;
+  restored.set_base_map(map, MapYamlMetadata());
+  ASSERT_TRUE(restored.load_refinement_yaml((directory / "history.yaml").string(), &error)) << error;
+  EXPECT_EQ(restored.effective_at_index(6), GridMap::kFree);
+  ASSERT_TRUE(restored.undo());
+  EXPECT_EQ(restored.effective_at_index(6), GridMap::kOccupied);
+  EXPECT_EQ(restored.effective_at_index(8), GridMap::kOccupied);
+  ASSERT_TRUE(restored.redo());
+  EXPECT_EQ(restored.effective_at_index(8), GridMap::kFree);
+  EXPECT_EQ(restored.effective_at_index(7), GridMap::kOccupied);
+  std::filesystem::remove_all(directory);
 }
 
 TEST(RefinementModelTest, ObstacleLineChangesFreeCellsOnly) {

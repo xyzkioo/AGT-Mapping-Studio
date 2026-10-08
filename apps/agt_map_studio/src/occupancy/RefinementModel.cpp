@@ -173,6 +173,12 @@ bool RefinementModel::save_refinement_yaml(const std::string &path,
                 << entry.geometry[0].x << entry.geometry[0].y << YAML::EndSeq
                 << YAML::Key << "max" << YAML::Value << YAML::Flow << YAML::BeginSeq
                 << entry.geometry[1].x << entry.geometry[1].y << YAML::EndSeq;
+      } else if (entry.type == "erase_selected_cells") {
+        emitter << YAML::Key << "cell_size_m" << YAML::Value << entry.width_m
+                << YAML::Key << "cells_xy" << YAML::Value << YAML::BeginSeq;
+        for (const auto &point : entry.geometry)
+          emitter << YAML::Flow << YAML::BeginSeq << point.x << point.y << YAML::EndSeq;
+        emitter << YAML::EndSeq;
       } else if (entry.type == "draw_obstacle" && entry.geometry.size() >= 2U) {
         emitter << YAML::Key << "start" << YAML::Value << YAML::Flow << YAML::BeginSeq
                 << entry.geometry[0].x << entry.geometry[0].y << YAML::EndSeq
@@ -262,6 +268,11 @@ bool RefinementModel::load_refinement_yaml(const std::string &path,
           const auto point = geometry[key];
           operation.geometry.push_back({point[0].as<double>(), point[1].as<double>()});
         }
+      } else if (operation.type == "erase_selected_cells") {
+        operation.width_m = geometry["cell_size_m"].as<double>();
+        if (!(operation.width_m > 0.)) throw std::runtime_error("invalid selected cell size");
+        for (const auto &point : geometry["cells_xy"])
+          operation.geometry.push_back({point[0].as<double>(), point[1].as<double>()});
       } else if (operation.type == "draw_obstacle") {
         for (const char *key : {"start", "end"}) {
           const auto point = geometry[key];
@@ -295,7 +306,8 @@ bool RefinementModel::load_refinement_yaml(const std::string &path,
     const auto command_for = [this](std::size_t id) -> std::unique_ptr<GridCommand> {
       for (const auto &op : history_) {
         if (op.id != id) continue;
-        if (op.type == "erase_rectangle") return std::make_unique<EraseRectangleCommand>(op);
+        if (op.type == "erase_rectangle" || op.type == "erase_selected_cells")
+          return std::make_unique<EraseRectangleCommand>(op);
         if (op.type == "draw_obstacle") return std::make_unique<DrawObstacleCommand>(op);
         if (op.type == "forbidden_polygon") return std::make_unique<ForbiddenPolygonCommand>(op);
         if (op.type == "fill_free_polygon" || op.type == "fill_occupied_polygon" || op.type == "fill_unknown_polygon")
@@ -506,6 +518,23 @@ bool RefinementModel::write_navigation_patch(const std::string &path,
             << YAML::Key << "edits" << YAML::Value << YAML::BeginSeq;
     for (const auto &entry : history_) {
       if (entry.undone || entry.type == "forbidden_polygon") continue;
+      if (entry.type == "erase_selected_cells") {
+        // Keep sparse selections sparse in the published patch as well.
+        // A bounding rectangle could erase an unselected pole between cells.
+        const double half = entry.width_m * .5;
+        for (const auto &center : entry.geometry) {
+          emitter << YAML::BeginMap << YAML::Key << "mode" << YAML::Value << "free"
+                  << YAML::Key << "note" << YAML::Value
+                  << ("studio op " + std::to_string(entry.id) + " erase_selected_cells")
+                  << YAML::Key << "polygon_m" << YAML::Value << YAML::BeginSeq;
+          for (const auto &point : std::vector<GridWorldPoint>{
+                   {center.x-half, center.y-half}, {center.x+half, center.y-half},
+                   {center.x+half, center.y+half}, {center.x-half, center.y+half}})
+            emitter << YAML::Flow << YAML::BeginSeq << point.x << point.y << YAML::EndSeq;
+          emitter << YAML::EndSeq << YAML::EndMap;
+        }
+        continue;
+      }
       std::string mode;
       const auto polygon = patch_polygon_for(entry, &mode);
       if (polygon.size() < 3U || mode.empty()) continue;

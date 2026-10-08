@@ -161,3 +161,16 @@ File → Save 2D Map 保存可继续编辑的二维地图；Export Edited PGM �
 ## 独立算法包和通用注册（2026-10-06）
 
 组合算法已迁移到 `processing/agt_map_processing`，Studio 不再编译或安装算法、OctoMap 构建程序和地图专用配置。通用执行器位于 `processing/agt_map_runner`，Studio 根据 `algorithm.yaml` 自动发现兼容算法，再读取统一的 `result.json`。工具箱可用 `bash scripts/process_map.sh --package <地图目录> --algorithm agt.offline_navigation --output <新目录>` 独立处理，结果也可以直接在 Studio 打开。算法使用说明见 [agt_map_processing](../../processing/agt_map_processing/README.md)，注册接口见 [agt_map_runner](../../processing/agt_map_runner/README.md)。
+
+## 二维／三维 XY 联动（2026-10-08）
+
+使用 `File > Open Mapping / Map Package` 打开配套地图包：`map.pcd + manifest.yaml + navigation/map.yaml`，或发布包的 `localization/global_map.pcd + navigation/map.yaml`。同时加载点云和包内二维图；单独打开PCD或map.yaml不支持联动，需重新打开完整地图包。
+
+- `View > 2D / 3D Linked View`（Ctrl+3）：左侧二维，右侧三维，可拖动分隔条。进入预览自动切到三维Navigate，左键拖动旋转、右键平移，保留选区高亮；需要三维框选时再主动切Select。Ctrl+1／Ctrl+2保留单独三维／二维视图。
+- 二维工具栏选择`Linked Inspect`：点击一个格子或拖动框选，三维高亮同一XY范围所有高度的未删除点并定位视角；不使用Z窗口，不做自动删除。没有点时显示“无对应点云”。右键拖动可平移二维视图。
+- 三维选点后，切回二维或打开双视图，选中点对应的二维格子显示红色，其他格子保持原色。二维框选则整块区域变红，包含没有对应点的格子。
+- 在`Linked Inspect`模式按Esc，或使用 `Edit > Clear Selection` 清除高亮。红色是显示覆盖层，不改变空闲／障碍／未知，不写入PGM、编辑历史或点云。
+- `Erase rect` 统一清除操作：有红色选区时点击即可把选中格子内的障碍改为空闲并清除高亮，无需再次画框；没有选区时进入拖框清除模式。未知和空闲保持原样，不删除三维点云。支持二维撤销／重做，通过 `File > Save 2D Map` 保存。选区没有障碍时会明确提示。
+- `Mark obstacle` 用于补标漏识别的细杆等障碍：选择工具后单击二维位置，按 `Width (m)` 写入方形障碍范围，宽度向上取整为整格、至少一格；可把空闲或未知改成障碍。右键仍可平移，拖动左键不会连续涂画。标记直接显示为黑色，复用障碍多边形历史和发布 patch，支持撤销／重做及 `Save 2D Map` 保存、重开恢复；不修改点云。可先用 `Linked Inspect` 对照点云定位，再切换标记工具。
+
+验证：`test_xy_linked_inspection` 覆盖两种包布局、负原点、同XY不同高度、不受Z窗口影响、单击／框选、三维反向高亮、状态刷新保持选区、Esc清除、独立文件禁用，以及实际红色绘制和保存仍为黑色。已通过离屏自动测试；三维OpenGL交互效果需在桌面重启后查看。

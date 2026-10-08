@@ -39,6 +39,7 @@ public:
 
   void set_cloud(LoadedPointCloud cloud, const QString &filename);
   void reset_camera();
+  std::size_t select_xy_region(double min_x, double min_y, double max_x, double max_y);
   bool save_view(const QString &path, QString *error) const;
   void set_camera_speeds(float speed, float fast_speed);
   void set_show_axis(bool enabled);
