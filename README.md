@@ -4,6 +4,29 @@ ROS 2 Humble 的三维 LiDAR 建图基线：**Livox MID-360 → FAST-LIO2 → PG
 
 它面向建图研究协作，不包含 Nav2、定位运行时、HMI、RTK 或底盘控制。FAST-LIO2、PGO、HBA 和 Batch-LIO 保持为锁定版本的外部依赖；本仓库只实现稳定的传感器、前后端和地图产物接口。
 
+## 本分支相对原仓库的改动
+
+本分支基于 [Aldoubt/agt-lio-pgo-mapping](https://github.com/Aldoubt/agt-lio-pgo-mapping)，主要完善已有的 **C++ Qt5/OpenGL Map Studio**、离线地图编辑和算法接入。
+
+- **浅色界面**：统一配色、图标和工具分组；参数随当前工具显示，工作流默认收起，为地图留出更多空间。
+- **二维／三维对照**：打开包含配套 PCD 和二维图的地图包后，使用 **Compare / Ctrl+3** 显示左右双视图；`Linked inspect` 支持 XY 选区双向高亮。
+- **独立二维编辑**：支持清除障碍、单击补标障碍、矩形和多边形填充、禁行区，以及 **Ctrl+S / Ctrl+Shift+S** 保存与另存。重新打开可恢复匹配的编辑历史和撤销/重做栈。
+- **编辑与任务保护**：三维删除保存精确点编号和会话记录；切换文件、退出及异步处理时检查输入和未保存编辑，避免结果覆盖当前修改。
+- **点云显示与算法拆分**：新增数值字段着色；离线处理由 `agt_map_processing` 和通用注册执行器 `agt_map_runner` 承担，Studio 负责工具调用、查看与编辑。
+
+![Map Studio 二维／三维对照](docs/assets/map_studio_20261009/linked-preview.png)
+
+在已配置 ROS 2 Humble 及工作区依赖的环境中，从本仓库目录构建并打开地图包：
+
+```bash
+./scripts/build_map_studio.sh
+./scripts/map_studio.sh --package /path/to/map_package
+```
+
+`--package` 打开地图包目录；单独查看点云或二维地图可分别使用 `--pcd /path/to/map.pcd`、`--map /path/to/map.yaml`。单独打开文件不建立二维／三维联动。编辑输出写入派生目录，原始地图包保留。
+
+本次 UI 验证为 **11 个 CTest 目标通过、1 个数据集算法目标跳过**，另完成原生 Qt 地图包显示和交互检查；未重跑 bag 建图、实机导航或正式发布。当前分支尚未合入上游的 traversability 栅格、YHS 专用入口及 `mapping_map_release` 流程，FAST-LIO2 配置差异仍需核查。版本基线、完整改动与已知问题见 [与原仓库的差异说明](docs/upstream_differences_20261009.md)。
+
 > MID-360 是 Livox 雷达。当前 **0.2.0 编排升级**已在共享目录对应的 Ubuntu 22.04 / ROS 2 Humble 宿主机完成 82 项自动化测试、完整基准录包回放及操作场景验证。MCP 的 Ubuntu 24.04 容器不是 ROS 执行环境。具体版本覆盖、测试安装层及剩余验收边界见 [宿主机测试报告](docs/mcp-host-validation.md)。
 
 ## 一键开始
@@ -158,5 +181,3 @@ Optimized PCD map artifact
 ## 独立离线地图处理
 
 算法包：[agt_map_processing](processing/agt_map_processing/README.md)；通用执行器：[agt_map_runner](processing/agt_map_runner/README.md)。工具箱入口：`bash scripts/process_map.sh --package <地图数据包> --algorithm agt.offline_navigation --output <新目录>`。地图数据和 `processing_profile.json` 存放在外部数据目录；Studio 自动发现算法并负责查看与编辑。
-
-当前分支的功能、Qt 界面、验证结果及尚未合入的上游变化见 [与原仓库的差异说明](docs/upstream_differences_20261009.md)。
