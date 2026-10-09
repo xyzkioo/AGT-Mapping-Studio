@@ -5,6 +5,8 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QFrame>
+#include <QFileInfo>
+#include <QTabWidget>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -21,43 +23,52 @@ namespace agt_map_studio {
 
 WorkflowPanel::WorkflowPanel(QWidget *parent) : QWidget(parent) {
   auto *outer = new QVBoxLayout(this);
-  outer->setContentsMargins(6, 6, 6, 6);
+  setObjectName(QStringLiteral("workflowPanel"));
+  outer->setContentsMargins(0, 0, 0, 0);
+  auto *tabs = new QTabWidget(this);
+  tabs->setObjectName(QStringLiteral("workflowTabs"));
 
   auto *scroll = new QScrollArea(this);
   scroll->setWidgetResizable(true);
   scroll->setFrameShape(QFrame::NoFrame);
+  scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   auto *host = new QWidget(scroll);
+  host->setObjectName(QStringLiteral("workflowContent"));
   auto *layout = new QVBoxLayout(host);
-  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setContentsMargins(12, 12, 12, 12);
+  layout->setSpacing(10);
 
   source_label_ = new QLabel(QStringLiteral("No source loaded"), host);
   source_label_->setWordWrap(true);
-  source_label_->setStyleSheet(QStringLiteral("color: #555;"));
+  source_label_->setObjectName(QStringLiteral("sourceSummary"));
+  source_label_->setTextFormat(Qt::PlainText);
   layout->addWidget(source_label_);
 
   steps_[0] = make_step(1, QStringLiteral("3D refinement"),
-                        QStringLiteral("Write refinement.yaml and a binary refined map.pcd "
-                                       "(apply_map_refinement when the source is a mapping "
-                                       "package, otherwise the studio clean-map export)."),
-                        host);
-  steps_[1] = make_step(2, QStringLiteral("Relocalization assets"),
-                        QStringLiteral("build_relocalization_assets from the effective PCD."),
-                        host);
+                        QStringLiteral("Apply point cloud edits to a derived map."), host);
+  steps_[1] = make_step(2, QStringLiteral("Relocalization"),
+                        QStringLiteral("Build localization assets from the effective cloud."), host);
   steps_[2] = make_step(3, QStringLiteral("Navigation layers"),
-                        QStringLiteral("pcd_to_nav_map + validate_nav_map (agt_navigation_v3)."),
-                        host);
-  steps_[3] = make_step(4, QStringLiteral("2D patch"),
-                        QStringLiteral("patch_nav_map with the polygon_m edits drawn in the 2D view."),
-                        host);
-  steps_[4] = make_step(5, QStringLiteral("Publish map package"),
-                        QStringLiteral("create_map_package into maps/<map_id>/<version>; never "
-                                       "overwrites an existing version."),
-                        host);
+                        QStringLiteral("Generate and validate the navigation map."), host);
+  steps_[3] = make_step(4, QStringLiteral("2D refinement"),
+                        QStringLiteral("Apply the edits drawn on the navigation map."), host);
+  steps_[4] = make_step(5, QStringLiteral("Publish map"),
+                        QStringLiteral("Save a new version to the map library."), host);
   for (auto &row : steps_) layout->addWidget(row.title->parentWidget());
 
-  auto *converter_box = new QGroupBox(QStringLiteral("Converter parameters (pcd_to_nav_map)"), host);
+  auto *parameters_scroll = new QScrollArea(tabs);
+  parameters_scroll->setWidgetResizable(true);
+  parameters_scroll->setFrameShape(QFrame::NoFrame);
+  parameters_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  auto *parameters_host = new QWidget(parameters_scroll);
+  auto *parameters_layout = new QVBoxLayout(parameters_host);
+  parameters_layout->setContentsMargins(12, 12, 12, 12);
+  parameters_layout->setSpacing(14);
+  auto *converter_box = new QGroupBox(QStringLiteral("Converter parameters"), parameters_host);
   converter_box_ = converter_box;
   auto *form = new QFormLayout(converter_box);
+  form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+  form->setSpacing(10);
   resolution_ = new QDoubleSpinBox(converter_box);
   resolution_->setRange(0.02, 1.0);
   resolution_->setSingleStep(0.01);
@@ -78,15 +89,16 @@ WorkflowPanel::WorkflowPanel(QWidget *parent) : QWidget(parent) {
   max_slope_->setRange(1.0, 89.0);
   max_slope_->setDecimals(1);
   max_slope_->setValue(20.0);
-  use_trajectory_ = new QCheckBox(QStringLiteral("Use mapping trajectory (poses.txt) as drivable prior"), converter_box);
+  use_trajectory_ = new QCheckBox(QStringLiteral("Use mapping trajectory"), converter_box);
   use_trajectory_->setChecked(true);
+  use_trajectory_->setToolTip(QStringLiteral("Use poses.txt as a drivable prior"));
   form->addRow(QStringLiteral("Resolution (m)"), resolution_);
   form->addRow(QStringLiteral("Margin (m)"), margin_);
   form->addRow(QStringLiteral("Min points / cell"), min_points_);
   form->addRow(QStringLiteral("Max step (m)"), max_step_);
   form->addRow(QStringLiteral("Max slope (deg)"), max_slope_);
   form->addRow(use_trajectory_);
-  layout->addWidget(converter_box);
+  parameters_layout->addWidget(converter_box);
   for (auto *spin : {resolution_, margin_, max_step_, max_slope_}) {
     connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
             [this](double) { emit parameters_changed(); });
@@ -95,31 +107,36 @@ WorkflowPanel::WorkflowPanel(QWidget *parent) : QWidget(parent) {
           [this](int) { emit parameters_changed(); });
   connect(use_trajectory_, &QCheckBox::toggled, this, [this](bool) { emit parameters_changed(); });
 
-  auto *publish_box = new QGroupBox(QStringLiteral("Publish target"), host);
+  auto *publish_box = new QGroupBox(QStringLiteral("Publish target"), parameters_host);
   auto *publish_form = new QFormLayout(publish_box);
+  publish_form->setRowWrapPolicy(QFormLayout::WrapAllRows);
+  publish_form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
   map_root_ = new QLineEdit(publish_box);
   map_id_ = new QLineEdit(publish_box);
-  map_id_->setPlaceholderText(QStringLiteral("e.g. bunker_mid360_mapping_20260901_205036"));
+  map_id_->setPlaceholderText(QStringLiteral("e.g. warehouse_mid360"));
   map_version_ = new QLineEdit(publish_box);
   map_version_->setPlaceholderText(QStringLiteral("e.g. v004-studio"));
-  activate_ = new QCheckBox(QStringLiteral("Activate after publish (select_map_package)"), publish_box);
+  activate_ = new QCheckBox(QStringLiteral("Activate after publishing"), publish_box);
   publish_form->addRow(QStringLiteral("Map root"), map_root_);
   publish_form->addRow(QStringLiteral("Map id"), map_id_);
   publish_form->addRow(QStringLiteral("Version"), map_version_);
   publish_form->addRow(activate_);
-  layout->addWidget(publish_box);
+  parameters_layout->addWidget(publish_box);
+  parameters_layout->addStretch();
+  parameters_scroll->setWidget(parameters_host);
   for (auto *edit : {map_root_, map_id_, map_version_}) {
     connect(edit, &QLineEdit::textChanged, this, [this](const QString &) { emit parameters_changed(); });
   }
   connect(activate_, &QCheckBox::toggled, this, [this](bool) { emit parameters_changed(); });
 
   auto *buttons = new QHBoxLayout();
-  run_all_ = new QPushButton(QStringLiteral("Run all pending steps"), host);
+  run_all_ = new QPushButton(QStringLiteral("Run pending steps"), host);
   cancel_ = new QPushButton(QStringLiteral("Cancel"), host);
+  run_all_->setProperty("role", "primary");
   cancel_->setEnabled(false);
   buttons->addWidget(run_all_);
   buttons->addWidget(cancel_);
-  layout->addLayout(buttons);
+
   connect(run_all_, &QPushButton::clicked, this, &WorkflowPanel::run_all_requested);
   connect(cancel_, &QPushButton::clicked, this, &WorkflowPanel::cancel_requested);
 
@@ -127,39 +144,64 @@ WorkflowPanel::WorkflowPanel(QWidget *parent) : QWidget(parent) {
   progress_ = new QProgressBar(host);
   progress_->setRange(0, 1);
   progress_->setValue(0);
+  progress_->setFixedHeight(6);
   progress_->setTextVisible(false);
-  layout->addWidget(progress_label_);
-  layout->addWidget(progress_);
 
-  log_ = new QPlainTextEdit(host);
+
+  layout->addStretch();
+  auto *log_page = new QWidget(tabs);
+  auto *log_layout = new QVBoxLayout(log_page);
+  log_layout->setContentsMargins(12, 12, 12, 12);
+  auto *log_title = new QLabel(QStringLiteral("Tool output"), log_page);
+  log_title->setProperty("role", "heading");
+  log_layout->addWidget(log_title);
+  log_ = new QPlainTextEdit(log_page);
   log_->setReadOnly(true);
   log_->setMaximumBlockCount(4000);
   log_->setMinimumHeight(160);
   log_->setPlaceholderText(QStringLiteral("External tool output appears here."));
-  layout->addWidget(log_, 1);
+  log_layout->addWidget(log_, 1);
 
   scroll->setWidget(host);
-  outer->addWidget(scroll);
+  tabs->addTab(scroll, QStringLiteral("Workflow"));
+  tabs->addTab(parameters_scroll, QStringLiteral("Parameters"));
+  tabs->addTab(log_page, QStringLiteral("Log"));
+  outer->addWidget(tabs, 1);
+  auto *footer = new QWidget(this);
+  auto *footer_layout = new QVBoxLayout(footer);
+  footer_layout->setContentsMargins(12, 10, 12, 12);
+  footer_layout->addLayout(buttons);
+  footer_layout->addWidget(progress_label_);
+  footer_layout->addWidget(progress_);
+  outer->addWidget(footer);
 }
 
 WorkflowPanel::StepRow WorkflowPanel::make_step(int number, const QString &title,
                                                 const QString &hint, QWidget *host) {
   auto *frame = new QFrame(host);
-  frame->setFrameShape(QFrame::StyledPanel);
+  frame->setObjectName(QStringLiteral("workflowCard"));
   auto *layout = new QVBoxLayout(frame);
-  layout->setContentsMargins(6, 4, 6, 4);
+  layout->setContentsMargins(12, 10, 12, 10);
+  layout->setSpacing(7);
   auto *header = new QHBoxLayout();
   StepRow row;
-  row.title = new QLabel(QStringLiteral("<b>%1. %2</b>").arg(number).arg(title), frame);
+  auto *number_label = new QLabel(QString::number(number), frame);
+  number_label->setObjectName(QStringLiteral("stepNumber"));
+  number_label->setFixedSize(26, 26);
+  number_label->setAlignment(Qt::AlignCenter);
+  header->addWidget(number_label);
+  row.title = new QLabel(title, frame);
+  row.title->setObjectName(QStringLiteral("stepTitle"));
   row.badge = new QLabel(frame);
   row.badge->setAlignment(Qt::AlignCenter);
-  row.badge->setMinimumWidth(64);
+  row.badge->setMinimumWidth(56);
   header->addWidget(row.title, 1);
   header->addWidget(row.badge);
   layout->addLayout(header);
   row.detail = new QLabel(hint, frame);
   row.detail->setWordWrap(true);
-  row.detail->setStyleSheet(QStringLiteral("color: #666; font-size: 11px;"));
+  row.detail->setProperty("role", "muted");
+  row.detail->setTextFormat(Qt::PlainText);
   layout->addWidget(row.detail);
   auto *actions = new QHBoxLayout();
   row.run = new QPushButton(QStringLiteral("Run"), frame);
@@ -181,20 +223,24 @@ WorkflowPanel::StepRow WorkflowPanel::make_step(int number, const QString &title
 
 void WorkflowPanel::paint_badge(QLabel *badge, StageState state, bool applicable) {
   QString text;
-  QString color;
+  QString foreground;
+  QString background;
   if (!applicable) {
-    text = QStringLiteral("n/a");
-    color = QStringLiteral("#9e9e9e");
+    text = QStringLiteral("Skip"); foreground = QStringLiteral("#748197"); background = QStringLiteral("#f0f3f8");
   } else {
     switch (state) {
-      case StageState::Fresh: text = QStringLiteral("fresh"); color = QStringLiteral("#2e7d32"); break;
-      case StageState::Stale: text = QStringLiteral("STALE"); color = QStringLiteral("#ef6c00"); break;
-      default: text = QStringLiteral("missing"); color = QStringLiteral("#757575"); break;
+      case StageState::Fresh:
+        text = QStringLiteral("Ready"); foreground = QStringLiteral("#238060"); background = QStringLiteral("#e8f6ef"); break;
+      case StageState::Stale:
+        text = QStringLiteral("Stale"); foreground = QStringLiteral("#ac711c"); background = QStringLiteral("#fff3df"); break;
+      default:
+        text = QStringLiteral("Pending"); foreground = QStringLiteral("#748197"); background = QStringLiteral("#f0f3f8"); break;
     }
   }
   badge->setText(text);
-  badge->setStyleSheet(QStringLiteral("QLabel { background: %1; color: white; border-radius: 6px; "
-                                      "padding: 2px 6px; font-weight: bold; }").arg(color));
+  badge->setStyleSheet(QStringLiteral("QLabel { background: %1; color: %2; border-radius: 5px; "
+                                      "padding: 4px 6px; font-size: 11px; font-weight: 600; }")
+                          .arg(background, foreground));
 }
 
 void WorkflowPanel::refresh(const WorkflowSession &session, bool tool_running) {
@@ -203,17 +249,17 @@ void WorkflowPanel::refresh(const WorkflowSession &session, bool tool_running) {
   converter_box_->setVisible(!registered);
   converter_box_->setTitle(QStringLiteral("Converter parameters (pcd_to_nav_map)"));
   steps_[2].detail->setText(registered
-      ? QStringLiteral("Registered map algorithm (selected when Run is clicked). Parameters are managed by the algorithm package.")
+      ? QStringLiteral("Use the registered navigation algorithm. Configure it when running.")
       : QStringLiteral("Registered algorithms, or pcd_to_nav_map + validate_nav_map."));
   if (session.empty()) {
-    source_label_->setText(QStringLiteral("No point cloud loaded. Open a 2D map and save it using File > Save 2D Map."));
+    source_label_->setText(QStringLiteral("Open a map package, point cloud or 2D map to begin."));
+    source_label_->setToolTip(QString());
   } else {
-    source_label_->setText(QStringLiteral("Source: %1%2\nWork dir: %3")
-                               .arg(session.source_pcd(),
-                                    session.source_is_mapping_package()
-                                        ? QStringLiteral(" (mapping package)")
-                                        : QStringLiteral(" (bare PCD)"),
-                                    session.work_dir()));
+    source_label_->setText(QStringLiteral("%1\n%2")
+        .arg(QFileInfo(session.source_pcd()).fileName(),
+             session.source_is_mapping_package() ? QStringLiteral("Map package") : QStringLiteral("Point cloud")));
+    source_label_->setToolTip(QStringLiteral("Source: %1\nWork directory: %2")
+        .arg(session.source_pcd(), session.work_dir()));
   }
   const bool applicable[5] = {session.has_3d_edits(), true, true, session.has_2d_edits(), true};
   const WorkflowSession::Stage stages[5] = {
@@ -234,14 +280,14 @@ void WorkflowPanel::refresh(const WorkflowSession &session, bool tool_running) {
     }
   }
   if (!session.has_3d_edits()) {
-    steps_[0].detail->setText(QStringLiteral("No 3D deletions yet: downstream steps use the source PCD."));
+    steps_[0].detail->setText(QStringLiteral("No point deletions. Using the source cloud."));
   } else {
-    steps_[0].detail->setText(QStringLiteral("Refinement rules -> %1").arg(session.refinement_rules_path()));
+    steps_[0].detail->setText(QStringLiteral("Point cloud edits are ready to apply."));
   }
   if (!session.has_2d_edits()) {
-    steps_[3].detail->setText(QStringLiteral("No 2D edits yet: publish uses the generated navigation layers."));
+    steps_[3].detail->setText(QStringLiteral("No map edits. Using the generated layers."));
   } else {
-    steps_[3].detail->setText(QStringLiteral("Patch YAML -> %1").arg(session.navigation_patch_path()));
+    steps_[3].detail->setText(QStringLiteral("Navigation map edits are ready to apply."));
   }
   const QStringList reasons = session.blocking_reasons_for_publish();
   steps_[4].detail->setText(reasons.isEmpty()

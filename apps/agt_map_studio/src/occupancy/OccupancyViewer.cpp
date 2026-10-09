@@ -166,7 +166,7 @@ void OccupancyViewer::fit_map() {
 
 void OccupancyViewer::paintEvent(QPaintEvent *) {
   QPainter painter(this);
-  painter.fillRect(rect(), QColor(42, 48, 56));
+  painter.fillRect(rect(), QColor("#edf1f7"));
   if (!image_.isNull()) {
     painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
     painter.save();
@@ -176,11 +176,11 @@ void OccupancyViewer::paintEvent(QPaintEvent *) {
     painter.drawImage(QPointF(0.0, 0.0), highlight_image_);
     painter.restore();
   } else {
-    painter.setPen(Qt::white);
+    painter.setPen(QColor("#526078"));
     painter.drawText(rect(), Qt::AlignCenter,
                      QStringLiteral("Open a Nav2 map.yaml to view occupancy map"));
   }
-  painter.setPen(Qt::white);
+  painter.setPen(QColor("#526078"));
   const QString dimensions = map_.empty()
                                  ? QStringLiteral("No map")
                                  : QStringLiteral("Map: %1 x %2 | %3 m/cell | zoom %4x")
@@ -189,11 +189,11 @@ void OccupancyViewer::paintEvent(QPaintEvent *) {
                                        .arg(map_.resolution(), 0, 'f', 3)
                                        .arg(zoom_, 0, 'f', 2);
   painter.fillRect(8, 8, std::min(width() - 16, 360), 24,
-                   QColor(0, 0, 0, 150));
+                   QColor(255, 255, 255, 235));
   painter.drawText(14, 25, dimensions);
   if (!cursor_status_.isEmpty()) {
     painter.fillRect(8, height() - 34, std::min(width() - 16, 620), 24,
-                     QColor(0, 0, 0, 170));
+                     QColor(255, 255, 255, 235));
     painter.drawText(14, height() - 17, cursor_status_);
   }
   if (!image_.isNull() && refinement_model_) {

@@ -25,6 +25,7 @@ class QDoubleSpinBox;
 class QLabel;
 class QMenu;
 class QToolBar;
+class QTabWidget;
 
 namespace agt_map_studio {
 
@@ -107,6 +108,8 @@ private:
   using StepFn = std::function<void()>;
 
   void create_actions();
+  void create_workspace();
+  void update_workspace_title();
   void sync_xy_highlight();
   void disable_xy_link();
   void create_workflow_dock();
@@ -140,6 +143,18 @@ private:
   PointCloudViewer *viewer_ = nullptr;
   OccupancyViewer *occupancy_viewer_ = nullptr;
   QSplitter *view_splitter_ = nullptr;
+  QList<int> linked_view_sizes_;
+  QTabWidget *editor_tabs_ = nullptr;
+  QAction *show_3d_action_ = nullptr;
+  QAction *show_2d_action_ = nullptr;
+  QAction *linked_action_ = nullptr;
+  QLabel *source_name_label_ = nullptr;
+  QLabel *workspace_caption_ = nullptr;
+  QLabel *occupancy_tool_hint_ = nullptr;
+  QWidget *occupancy_parameters_ = nullptr;
+  QAction *finish_polygon_action_ = nullptr;
+  QAction *undo_vertex_action_ = nullptr;
+  QString map_view_path_;
   bool xy_link_enabled_ = false;
   QString linked_package_root_;
   std::vector<std::size_t> linked_selected_indices_;

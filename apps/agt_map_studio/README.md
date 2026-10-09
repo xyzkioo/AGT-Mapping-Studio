@@ -31,18 +31,42 @@ The current environment has Qt 5.15.3 rather than Qt6, so the CMake file uses
 Qt5 automatically and does not install anything.
 
 ```bash
-cd ~/ros2_ws
-colcon build --base-paths src/agt_mapping_framework/apps/agt_map_studio \
-  --packages-select agt_map_studio
-source install/setup.bash
+cd /home/xyzkioo/ros2_workspace/src/agt-lio-pgo-mapping
+scripts/build_map_studio.sh
 ```
+
+Builds this checkout into `.studio-build` / `.studio-install`, which
+`scripts/map_studio.sh` sources after the shared workspace overlays. UI changes
+therefore run from this checkout. Tests include the standalone editing and XY
+link checks; the dataset algorithm smoke test requires `AGT_MAP_PROFILE`.
+
 
 ## Run
 
 ```bash
-ros2 run agt_map_studio map_viewer \
-  --pcd /path/to/map_package/map.pcd
+scripts/map_studio.sh --package /path/to/map_package
 ```
+
+The light interface uses one command bar for open, save, undo and redo. Left
+2D tools are grouped into Explore, Refine, and Fill & Keep Out. The polygon
+row's dropdown contains free / occupied / unknown polygons and forbidden zones.
+Line and marker width appears only while using those tools. In 3D, Select or
+Delete reveals shape and height settings; sphere radius appears for Sphere.
+Display options expand separately.
+
+Use the central `3D`, `2D`, or `Compare` buttons (Ctrl+1/2/3). Linked view starts
+with equal panes, allows resizing, and retains the adjusted split when switching
+views. `Linked inspect` in the left 2D tools links XY selections across both views.
+The top-right `Workflow` button (Ctrl+W) opens Workflow / Parameters / Log tabs;
+this panel starts closed to leave more space for the map, and opens when an
+external tool begins running. The View menu can reopen closed tool panels.
+
+For a standalone point cloud:
+
+```bash
+scripts/map_studio.sh --pcd /path/to/map.pcd
+```
+
 
 To display confidence or another scalar field produced by an external algorithm, store it as a numeric PCD field alongside `x y z`, then select it in the View menu or pass it on startup:
 
@@ -167,10 +191,10 @@ File → Save 2D Map 保存可继续编辑的二维地图；Export Edited PGM �
 使用 `File > Open Mapping / Map Package` 打开配套地图包：`map.pcd + manifest.yaml + navigation/map.yaml`，或发布包的 `localization/global_map.pcd + navigation/map.yaml`。同时加载点云和包内二维图；单独打开PCD或map.yaml不支持联动，需重新打开完整地图包。
 
 - `View > 2D / 3D Linked View`（Ctrl+3）：左侧二维，右侧三维，可拖动分隔条。进入预览自动切到三维Navigate，左键拖动旋转、右键平移，保留选区高亮；需要三维框选时再主动切Select。Ctrl+1／Ctrl+2保留单独三维／二维视图。
-- 二维工具栏选择`Linked Inspect`：点击一个格子或拖动框选，三维高亮同一XY范围所有高度的未删除点并定位视角；不使用Z窗口，不做自动删除。没有点时显示“无对应点云”。右键拖动可平移二维视图。
+- 左侧 `2D tools` 选择 `Linked inspect`：点击一个格子或拖动框选，三维高亮同一XY范围所有高度的未删除点并定位视角；不使用Z窗口，不做自动删除。没有点时显示“无对应点云”。右键拖动可平移二维视图。
 - 三维选点后，切回二维或打开双视图，选中点对应的二维格子显示红色，其他格子保持原色。二维框选则整块区域变红，包含没有对应点的格子。
-- 在`Linked Inspect`模式按Esc，或使用 `Edit > Clear Selection` 清除高亮。红色是显示覆盖层，不改变空闲／障碍／未知，不写入PGM、编辑历史或点云。
-- `Erase rect` 统一清除操作：有红色选区时点击即可把选中格子内的障碍改为空闲并清除高亮，无需再次画框；没有选区时进入拖框清除模式。未知和空闲保持原样，不删除三维点云。支持二维撤销／重做，通过 `File > Save 2D Map` 保存。选区没有障碍时会明确提示。
-- `Mark obstacle` 用于补标漏识别的细杆等障碍：选择工具后单击二维位置，按 `Width (m)` 写入方形障碍范围，宽度向上取整为整格、至少一格；可把空闲或未知改成障碍。右键仍可平移，拖动左键不会连续涂画。标记直接显示为黑色，复用障碍多边形历史和发布 patch，支持撤销／重做及 `Save 2D Map` 保存、重开恢复；不修改点云。可先用 `Linked Inspect` 对照点云定位，再切换标记工具。
+- 在`Linked inspect`模式按Esc，或使用 `Edit > Clear Selection` 清除高亮。红色是显示覆盖层，不改变空闲／障碍／未知，不写入PGM、编辑历史或点云。
+- `Erase obstacles` 统一清除操作：有红色选区时点击即可把选中格子内的障碍改为空闲并清除高亮，无需再次画框；没有选区时进入拖框清除模式。未知和空闲保持原样，不删除三维点云。支持二维撤销／重做，通过 `File > Save 2D Map` 保存。选区没有障碍时会明确提示。
+- `Mark obstacle` 用于补标漏识别的细杆等障碍：选择工具后单击二维位置，按 `Line / marker width` 写入方形障碍范围，宽度向上取整为整格、至少一格；可把空闲或未知改成障碍。右键仍可平移，拖动左键不会连续涂画。标记直接显示为黑色，复用障碍多边形历史和发布 patch，支持撤销／重做及 `Save 2D Map` 保存、重开恢复；不修改点云。可先用 `Linked inspect` 对照点云定位，再切换标记工具。
 
 验证：`test_xy_linked_inspection` 覆盖两种包布局、负原点、同XY不同高度、不受Z窗口影响、单击／框选、三维反向高亮、状态刷新保持选区、Esc清除、独立文件禁用，以及实际红色绘制和保存仍为黑色。已通过离屏自动测试；三维OpenGL交互效果需在桌面重启后查看。

@@ -7,6 +7,13 @@
 #include "occupancy/commands/FillPolygonCommand.hpp"
 #include "occupancy/commands/ForbiddenPolygonCommand.hpp"
 #include "ui/WorkflowPanel.hpp"
+#include "ui/StudioStyle.hpp"
+#include <QFrame>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QPushButton>
+#include <QScrollArea>
+#include <QTabWidget>
 
 #include <agt_pcd2grid_exporter/OccupancyGridWriter.hpp>
 #include <agt_pcd2grid_exporter/PCDProjector.hpp>
@@ -44,6 +51,7 @@
 #include <QStringList>
 #include <QToolBar>
 #include <QToolButton>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -74,16 +82,19 @@ MainWindow::MainWindow(const QString &config_path, QWidget *parent)
       occupancy_viewer_(new OccupancyViewer(this)),
       view_splitter_(new QSplitter(Qt::Horizontal, this)) {
   setWindowTitle(QStringLiteral("AGT Map Studio"));
-  resize(1480, 900);
+  resize(1600, 940);
   view_splitter_->addWidget(occupancy_viewer_);
   view_splitter_->addWidget(viewer_);
   occupancy_viewer_->hide();
-  setCentralWidget(view_splitter_);
+  view_splitter_->setChildrenCollapsible(false);
+  view_splitter_->setStretchFactor(0, 1);
+  view_splitter_->setStretchFactor(1, 1);
   viewer_->set_selection_manager(&selection_manager_);
   occupancy_viewer_->set_refinement_model(&refinement_model_);
   default_map_root_ = QProcessEnvironment::systemEnvironment().value(
       QStringLiteral("AGT_MAP_ROOT"), QDir::home().filePath(QStringLiteral("ros2_ws/maps")));
   create_actions();
+  create_workspace();
   create_workflow_dock();
   load_config(config_path);
   session_.publish_target().map_root = default_map_root_;
@@ -108,7 +119,7 @@ MainWindow::MainWindow(const QString &config_path, QWidget *parent)
   });
   connect(viewer_, &PointCloudViewer::delete_requested_outside_delete_mode, this, [this]() {
     statusBar()->showMessage(
-        QStringLiteral("Switch to Delete mode (toolbar or X) before pressing Delete"), 4000);
+        QStringLiteral("Switch to Delete mode (3D tools or X) before pressing Delete"), 4000);
   });
   connect(occupancy_viewer_, &OccupancyViewer::status_changed, this, &MainWindow::show_stats);
   connect(occupancy_viewer_, &OccupancyViewer::erase_rectangle_requested, this,
@@ -121,6 +132,7 @@ MainWindow::MainWindow(const QString &config_path, QWidget *parent)
           &MainWindow::apply_fill_polygon);
 
   connect(&tool_runner_, &ExternalToolRunner::started, this, [this](const QString &label) {
+    workflow_dock_->show();
     workflow_panel_->set_progress(QStringLiteral("Running: %1").arg(label), true);
     statusBar()->showMessage(QStringLiteral("Running %1 ...").arg(label));
     refresh_workflow();
@@ -300,23 +312,23 @@ void MainWindow::create_actions() {
   view_menu_ = view_menu;
   auto *view_group = new QActionGroup(this);
   view_group->setExclusive(true);
-  auto *show_3d_action = new QAction(QStringLiteral("3D Point Cloud"), this);
-  auto *show_2d_action = new QAction(QStringLiteral("2D Navigation Map"), this);
-  auto *linked_action = new QAction(QStringLiteral("2D / 3D Linked View"), this);
-  for (auto *action : {show_3d_action, show_2d_action, linked_action}) {
+  show_3d_action_ = new QAction(QStringLiteral("3D Point Cloud"), this);
+  show_2d_action_ = new QAction(QStringLiteral("2D Navigation Map"), this);
+  linked_action_ = new QAction(QStringLiteral("2D / 3D Linked View"), this);
+  for (auto *action : {show_3d_action_, show_2d_action_, linked_action_}) {
     action->setCheckable(true);
     view_group->addAction(action);
   }
-  show_3d_action->setChecked(true);
-  show_3d_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
-  show_2d_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_2));
-  connect(show_3d_action, &QAction::triggered, this, &MainWindow::show_3d_view);
-  connect(show_2d_action, &QAction::triggered, this, &MainWindow::show_2d_view);
-  view_menu->addAction(show_3d_action);
-  view_menu->addAction(show_2d_action);
-  linked_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_3));
-  connect(linked_action, &QAction::triggered, this, &MainWindow::show_linked_view);
-  view_menu->addAction(linked_action);
+  show_3d_action_->setChecked(true);
+  show_3d_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
+  show_2d_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_2));
+  connect(show_3d_action_, &QAction::triggered, this, &MainWindow::show_3d_view);
+  connect(show_2d_action_, &QAction::triggered, this, &MainWindow::show_2d_view);
+  view_menu->addAction(show_3d_action_);
+  view_menu->addAction(show_2d_action_);
+  linked_action_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_3));
+  connect(linked_action_, &QAction::triggered, this, &MainWindow::show_linked_view);
+  view_menu->addAction(linked_action_);
   view_menu->addSeparator();
   view_menu->addAction(reset_action);
   view_menu->addAction(isometric_action);
@@ -369,167 +381,397 @@ void MainWindow::create_actions() {
   connect(workflow_help_action, &QAction::triggered, this, &MainWindow::show_workflow_help);
   help_menu->addAction(workflow_help_action);
 
-  // 3D toolbar: mode + selection tool + z window + view helpers
-  toolbar_3d_ = addToolBar(QStringLiteral("3D Edit"));
+  // One global command bar; tool modes and parameters belong to the inspector.
+  auto *file_toolbar = addToolBar(QStringLiteral("Workspace"));
+  file_toolbar->setObjectName(QStringLiteral("workspaceToolbar"));
+  file_toolbar->setMovable(false);
+  file_toolbar->setIconSize(QSize(18, 18));
+  file_toolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  auto *mark = new QLabel(QStringLiteral("AGT"), this);
+  mark->setObjectName(QStringLiteral("brandMark"));
+  file_toolbar->addWidget(mark);
+  auto *brand = new QLabel(QStringLiteral("Map Studio"), this);
+  brand->setObjectName(QStringLiteral("brandName"));
+  file_toolbar->addWidget(brand);
+  auto *open_button = new QToolButton(this);
+  open_button->setText(QStringLiteral("Open map"));
+  open_button->setProperty("role", "primary");
+  open_button->setIcon(studio_icon(StudioIcon::Open, true));
+  open_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  open_button->setPopupMode(QToolButton::InstantPopup);
+  auto *open_menu = new QMenu(open_button);
+  for (auto *action : {open_package_action, open_action, open_occupancy_action, open_session_action})
+    open_menu->addAction(action);
+  open_button->setMenu(open_menu);
+  file_toolbar->addWidget(open_button);
+  save_2d_action_->setIcon(studio_icon(StudioIcon::Save));
+  auto *save_button = new QToolButton(this);
+  save_button->setDefaultAction(save_2d_action_);
+  save_button->setText(QStringLiteral("Save map"));
+  connect(save_2d_action_, &QAction::changed, save_button,
+          [save_button]() { save_button->setText(QStringLiteral("Save map")); });
+  save_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  file_toolbar->addWidget(save_button);
+  save_session_action->setIcon(studio_icon(StudioIcon::Save));
+  file_toolbar->addSeparator();
+  undo_action->setIcon(studio_icon(StudioIcon::Undo));
+  redo_action->setIcon(studio_icon(StudioIcon::Redo));
+  for (auto *action : {undo_action, redo_action}) {
+    auto *button = new QToolButton(this);
+    button->setDefaultAction(action);
+    button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    button->setToolTip(action->text() + QStringLiteral(" · ") + action->shortcut().toString());
+    file_toolbar->addWidget(button);
+  }
+  auto *spacer = new QWidget(this);
+  spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+  file_toolbar->addWidget(spacer);
+
+  auto *editor_dock = new QDockWidget(QStringLiteral("Tools"), this);
+  editor_dock->setObjectName(QStringLiteral("editorDock"));
+  editor_dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+  editor_dock->setFeatures(QDockWidget::DockWidgetClosable);
+  auto *editor_panel = new QWidget(editor_dock);
+  editor_panel->setObjectName(QStringLiteral("editorPanel"));
+  auto *editor_layout = new QVBoxLayout(editor_panel);
+  editor_layout->setContentsMargins(0, 0, 0, 0);
+  editor_tabs_ = new QTabWidget(editor_panel);
+  editor_tabs_->setObjectName(QStringLiteral("editorTabs"));
+  const auto section = [](QVBoxLayout *layout, const QString &text) {
+    auto *label = new QLabel(text);
+    label->setProperty("role", "section");
+    layout->addSpacing(12);
+    layout->addWidget(label);
+  };
+  const auto tool_row = [](QVBoxLayout *layout, QAction *action, QWidget *parent) {
+    auto *button = new StudioToolButton(parent);
+    button->setDefaultAction(action);
+    layout->addWidget(button);
+    return button;
+  };
+  const auto add_page = [this](QWidget *page, const QString &title) {
+    auto *scroll = new QScrollArea(editor_tabs_);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setWidget(page);
+    editor_tabs_->addTab(scroll, title);
+  };
+
+  auto *selection_page = new QWidget(editor_tabs_);
+  selection_page->setObjectName(QStringLiteral("editorPage"));
+  auto *selection_layout = new QVBoxLayout(selection_page);
+  selection_layout->setContentsMargins(16, 14, 16, 16);
+  selection_layout->setSpacing(3);
+  section(selection_layout, QStringLiteral("POINT CLOUD"));
+  toolbar_3d_ = new QToolBar(QStringLiteral("3D view controls"), this);
   toolbar_3d_->setMovable(false);
+  toolbar_3d_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
   auto *mode_group = new QActionGroup(this);
   mode_group->setExclusive(true);
-  mode_navigate_action_ = toolbar_3d_->addAction(QStringLiteral("Navigate"));
-  mode_select_action_ = toolbar_3d_->addAction(QStringLiteral("Select"));
-  mode_delete_action_ = toolbar_3d_->addAction(QStringLiteral("Delete"));
+  mode_navigate_action_ = new QAction(studio_icon(StudioIcon::Navigate), QStringLiteral("Navigate"), this);
+  mode_select_action_ = new QAction(studio_icon(StudioIcon::Select), QStringLiteral("Select"), this);
+  mode_delete_action_ = new QAction(studio_icon(StudioIcon::Delete), QStringLiteral("Delete"), this);
   mode_navigate_action_->setShortcut(Qt::Key_N);
   mode_select_action_->setShortcut(Qt::Key_B);
   mode_delete_action_->setShortcut(Qt::Key_X);
   for (auto *action : {mode_navigate_action_, mode_select_action_, mode_delete_action_}) {
     action->setCheckable(true);
     mode_group->addAction(action);
+    tool_row(selection_layout, action, selection_page);
+    addAction(action); // keep mode shortcuts active when the inspector is closed
   }
   mode_navigate_action_->setChecked(true);
   connect(mode_navigate_action_, &QAction::triggered, this, &MainWindow::set_mode_navigate);
   connect(mode_select_action_, &QAction::triggered, this, &MainWindow::set_mode_select);
   connect(mode_delete_action_, &QAction::triggered, this, &MainWindow::set_mode_delete);
-  toolbar_3d_->addSeparator();
-  toolbar_3d_->addWidget(new QLabel(QStringLiteral(" Tool: "), this));
-  selection_tool_combo_ = new QComboBox(this);
+  reset_action->setIcon(studio_icon(StudioIcon::Fit));
+  auto *camera_button = new QToolButton(this);
+  camera_button->setDefaultAction(reset_action);
+  camera_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  camera_button->setPopupMode(QToolButton::MenuButtonPopup);
+  auto *camera_menu = new QMenu(camera_button);
+  for (auto *action : {isometric_action, front_action, top_action}) camera_menu->addAction(action);
+  camera_button->setMenu(camera_menu);
+  toolbar_3d_->addWidget(camera_button);
+
+  auto *selection_parameters = new QWidget(selection_page);
+  selection_parameters->setObjectName(QStringLiteral("selectionParameters"));
+  auto *parameters_layout = new QVBoxLayout(selection_parameters);
+  parameters_layout->setContentsMargins(0, 12, 0, 8);
+  parameters_layout->setSpacing(8);
+  auto *shape_label = new QLabel(QStringLiteral("Selection shape"), selection_parameters);
+  parameters_layout->addWidget(shape_label);
+  selection_tool_combo_ = new QComboBox(selection_parameters);
   selection_tool_combo_->addItem(QStringLiteral("Rectangle"), static_cast<int>(SelectionTool::ScreenRect));
   selection_tool_combo_->addItem(QStringLiteral("Polygon"), static_cast<int>(SelectionTool::PolygonPrism));
   selection_tool_combo_->addItem(QStringLiteral("Sphere"), static_cast<int>(SelectionTool::Sphere));
-  selection_tool_combo_->setToolTip(QStringLiteral("How points are selected in Select/Delete mode"));
-  selection_tool_combo_->setFixedWidth(112);
-  toolbar_3d_->addWidget(selection_tool_combo_);
-  connect(selection_tool_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
-    viewer_->set_selection_tool(static_cast<SelectionTool>(selection_tool_combo_->itemData(index).toInt()));
-    sphere_radius_spin_->setEnabled(viewer_->selection_tool() == SelectionTool::Sphere);
-  });
-  sphere_radius_spin_ = new QDoubleSpinBox(this);
+  selection_tool_combo_->setToolTip(QStringLiteral("Rectangle: drag. Polygon: click vertices, double-click to close. Sphere: click center."));
+  parameters_layout->addWidget(selection_tool_combo_);
+  auto *sphere_row = new QWidget(selection_parameters);
+  sphere_row->setObjectName(QStringLiteral("sphereParameters"));
+  auto *sphere_layout = new QVBoxLayout(sphere_row);
+  sphere_layout->setContentsMargins(0, 0, 0, 0);
+  sphere_layout->addWidget(new QLabel(QStringLiteral("Sphere radius"), sphere_row));
+  sphere_radius_spin_ = new QDoubleSpinBox(sphere_row);
   sphere_radius_spin_->setRange(0.05, 20.0);
   sphere_radius_spin_->setSingleStep(0.1);
   sphere_radius_spin_->setDecimals(2);
   sphere_radius_spin_->setValue(0.5);
-  sphere_radius_spin_->setPrefix(QStringLiteral("r "));
   sphere_radius_spin_->setSuffix(QStringLiteral(" m"));
-  sphere_radius_spin_->setFixedWidth(88);
-  sphere_radius_spin_->setEnabled(false);
-  sphere_radius_spin_->setToolTip(QStringLiteral("Sphere selection radius"));
-  toolbar_3d_->addWidget(sphere_radius_spin_);
+  sphere_layout->addWidget(sphere_radius_spin_);
+  sphere_row->hide();
+  parameters_layout->addWidget(sphere_row);
+  connect(selection_tool_combo_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this, sphere_row](int index) {
+    const auto tool = static_cast<SelectionTool>(selection_tool_combo_->itemData(index).toInt());
+    viewer_->set_selection_tool(tool);
+    sphere_row->setVisible(tool == SelectionTool::Sphere);
+  });
   connect(sphere_radius_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
           [this](double value) { viewer_->set_sphere_radius(value); viewer_->mark_edit_state_dirty(); });
-  toolbar_3d_->addSeparator();
-  z_window_check_ = new QCheckBox(QStringLiteral("Z"), this);
-  z_window_check_->setToolTip(QStringLiteral("Limit rectangle/polygon selections to a height band"));
-  toolbar_3d_->addWidget(z_window_check_);
-  z_min_spin_ = new QDoubleSpinBox(this);
-  z_min_spin_->setRange(-1000.0, 1000.0);
-  z_min_spin_->setDecimals(2);
+  z_window_check_ = new QCheckBox(QStringLiteral("Limit selection by height"), selection_parameters);
+  parameters_layout->addWidget(z_window_check_);
+  auto *height_row = new QWidget(selection_parameters);
+  auto *height_form = new QFormLayout(height_row);
+  height_form->setContentsMargins(0, 0, 0, 0);
+  z_min_spin_ = new QDoubleSpinBox(height_row);
+  z_max_spin_ = new QDoubleSpinBox(height_row);
+  for (auto *spin : {z_min_spin_, z_max_spin_}) {
+    spin->setRange(-1000.0, 1000.0);
+    spin->setDecimals(2);
+    spin->setSuffix(QStringLiteral(" m"));
+  }
   z_min_spin_->setValue(-1.0);
-  z_min_spin_->setPrefix(QStringLiteral("min "));
-  z_min_spin_->setFixedWidth(94);
-  z_max_spin_ = new QDoubleSpinBox(this);
-  z_max_spin_->setRange(-1000.0, 1000.0);
-  z_max_spin_->setDecimals(2);
   z_max_spin_->setValue(3.0);
-  z_max_spin_->setPrefix(QStringLiteral("max "));
-  z_max_spin_->setFixedWidth(94);
-  toolbar_3d_->addWidget(z_min_spin_);
-  toolbar_3d_->addWidget(z_max_spin_);
-  const auto apply_z_window = [this]() {
-    viewer_->set_z_window(z_window_check_->isChecked(), z_min_spin_->value(), z_max_spin_->value());
+  height_form->addRow(QStringLiteral("Min Z"), z_min_spin_);
+  height_form->addRow(QStringLiteral("Max Z"), z_max_spin_);
+  height_row->hide();
+  parameters_layout->addWidget(height_row);
+  const auto apply_z_window = [this, height_row]() {
+    const bool enabled = z_window_check_->isChecked();
+    height_row->setVisible(enabled);
+    viewer_->set_z_window(enabled, z_min_spin_->value(), z_max_spin_->value());
   };
   connect(z_window_check_, &QCheckBox::toggled, this, [apply_z_window](bool) { apply_z_window(); });
-  connect(z_min_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [apply_z_window](double) { apply_z_window(); });
-  connect(z_max_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [apply_z_window](double) { apply_z_window(); });
-  toolbar_3d_->addSeparator();
-  toolbar_3d_->addAction(hide_deleted_action_);
-  toolbar_3d_->addAction(isolate_selection_action_);
-  toolbar_3d_->addAction(delete_action);
+  for (auto *spin : {z_min_spin_, z_max_spin_})
+    connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [apply_z_window](double) { apply_z_window(); });
+  selection_layout->addWidget(selection_parameters);
+  selection_parameters->hide();
+  const auto update_selection_parameters = [this, selection_parameters]() {
+    selection_parameters->setVisible(mode_select_action_->isChecked() || mode_delete_action_->isChecked());
+  };
+  connect(mode_select_action_, &QAction::toggled, this, update_selection_parameters);
+  connect(mode_delete_action_, &QAction::toggled, this, update_selection_parameters);
 
-  // 2D toolbar
-  occupancy_toolbar_ = addToolBar(QStringLiteral("2D Edit"));
+  section(selection_layout, QStringLiteral("DISPLAY"));
+  auto *display_toggle = new StudioToolButton(selection_page);
+  display_toggle->setText(QStringLiteral("Display options"));
+  display_toggle->setIcon(studio_icon(StudioIcon::Settings));
+  display_toggle->setCheckable(true);
+  selection_layout->addWidget(display_toggle);
+  auto *display_options = new QWidget(selection_page);
+  display_options->setObjectName(QStringLiteral("displayOptions"));
+  auto *display_layout = new QVBoxLayout(display_options);
+  display_layout->setContentsMargins(10, 8, 0, 8);
+  for (auto *action : {show_axis_action_, height_coloring_action_, dark_background_action_,
+                       hide_deleted_action_, isolate_selection_action_}) {
+    auto *check = new QCheckBox(action->text(), display_options);
+    check->setChecked(action->isChecked());
+    connect(check, &QCheckBox::toggled, action, &QAction::setChecked);
+    connect(action, &QAction::toggled, check, &QCheckBox::setChecked);
+    display_layout->addWidget(check);
+  }
+  display_options->hide();
+  connect(display_toggle, &QToolButton::toggled, display_options, &QWidget::setVisible);
+  selection_layout->addWidget(display_options);
+  selection_layout->addStretch();
+  auto *selection_hint = new QLabel(QStringLiteral("Navigate to explore the cloud.\nSelect or Delete to show editing parameters."), selection_page);
+  selection_hint->setProperty("role", "muted");
+  selection_hint->setWordWrap(true);
+  selection_layout->addWidget(selection_hint);
+  add_page(selection_page, QStringLiteral("3D tools"));
+
+  auto *map_page = new QWidget(editor_tabs_);
+  map_page->setObjectName(QStringLiteral("editorPage"));
+  auto *map_layout = new QVBoxLayout(map_page);
+  map_layout->setContentsMargins(16, 14, 16, 16);
+  map_layout->setSpacing(3);
+  occupancy_toolbar_ = new QToolBar(QStringLiteral("2D view controls"), this);
   occupancy_toolbar_->setMovable(false);
+  occupancy_toolbar_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
   auto *occupancy_group = new QActionGroup(this);
-  auto *occupancy_menu = new QMenu(this);
-  auto *occupancy_mode_button = new QToolButton(this);
-  occupancy_mode_button->setPopupMode(QToolButton::MenuButtonPopup);
-  occupancy_mode_button->setToolButtonStyle(Qt::ToolButtonTextOnly);
-  occupancy_mode_button->setToolTip(QStringLiteral("Choose the active 2D editing mode"));
-  occupancy_mode_button->setMenu(occupancy_menu);
-  occupancy_toolbar_->addWidget(occupancy_mode_button);
   occupancy_group->setExclusive(true);
-  struct ModeEntry {
-    const char *label;
-    OccupancyInteractionMode mode;
-    const char *tip;
-  };
+  struct ModeEntry { const char *label; OccupancyInteractionMode mode; StudioIcon icon; const char *tip; };
   const ModeEntry entries[] = {
-      {"View", OccupancyInteractionMode::View, "Pan/zoom only"},
-      {"Inspect", OccupancyInteractionMode::InspectXY, "Click a cell or drag a rectangle to highlight points in the same XY region across all heights"},
-      {"Erase", OccupancyInteractionMode::Erase, "With a highlighted selection: clear selected 2D obstacles. Without a selection: drag to erase. Does not delete 3D points."},
-      {"Obstacle line", OccupancyInteractionMode::Obstacle, "Drag a line of given width -> occupied"},
-      {"Mark obstacle", OccupancyInteractionMode::ObstacleMarker, "Click to mark a missed pole or obstacle as occupied. Width sets the square footprint, rounded up to whole cells (at least one cell)."},
-      {"Free rectangle", OccupancyInteractionMode::FreeRectangle, "Drag: occupied and unknown -> free"},
-      {"Free polygon", OccupancyInteractionMode::FreePolygon, "Click vertices, double-click: fill free"},
-      {"Occupied polygon", OccupancyInteractionMode::OccupiedPolygon, "Click vertices, double-click: fill occupied"},
-      {"Unknown polygon", OccupancyInteractionMode::UnknownPolygon, "Click vertices, double-click: fill unknown"},
-      {"Forbidden zone", OccupancyInteractionMode::Forbidden, "Keep-out polygon (exported to keepout_zones.yaml)"},
+      {"Pan & zoom", OccupancyInteractionMode::View, StudioIcon::Navigate, "Pan/zoom only"},
+      {"Linked inspect", OccupancyInteractionMode::InspectXY, StudioIcon::Inspect, "Click or drag to highlight points at the same XY across all heights"},
+      {"Erase obstacles", OccupancyInteractionMode::Erase, StudioIcon::Erase, "Clear obstacles in the highlighted selection, or drag to erase; keeps 3D points"},
+      {"Mark obstacle", OccupancyInteractionMode::ObstacleMarker, StudioIcon::Marker, "Click to mark a missed pole or obstacle; width sets the footprint in whole cells"},
+      {"Obstacle line", OccupancyInteractionMode::Obstacle, StudioIcon::Line, "Drag an obstacle line of the given width"},
+      {"Free rectangle", OccupancyInteractionMode::FreeRectangle, StudioIcon::Rectangle, "Drag to turn occupied and unknown cells free"},
+      {"Free polygon", OccupancyInteractionMode::FreePolygon, StudioIcon::Polygon, "Click vertices; double-click or Finish to fill free"},
+      {"Occupied polygon", OccupancyInteractionMode::OccupiedPolygon, StudioIcon::Polygon, "Fill a polygon with obstacles"},
+      {"Unknown polygon", OccupancyInteractionMode::UnknownPolygon, StudioIcon::Polygon, "Fill a polygon with unknown cells"},
+      {"Forbidden zone", OccupancyInteractionMode::Forbidden, StudioIcon::Forbidden, "Draw a keep-out polygon"},
   };
-  bool first = true;
-  for (const auto &entry : entries) {
-    auto *action = occupancy_menu->addAction(QString::fromUtf8(entry.label));
-    if (entry.mode == OccupancyInteractionMode::Erase)
-      action->setObjectName(QStringLiteral("erase_rect"));
-    if (entry.mode == OccupancyInteractionMode::ObstacleMarker)
-      action->setObjectName(QStringLiteral("mark_obstacle"));
+  auto *area_menu = new QMenu(map_page);
+  StudioToolButton *area_button = nullptr;
+  for (int i = 0; i < 10; ++i) {
+    const auto &entry = entries[i];
+    if (i == 0) section(map_layout, QStringLiteral("EXPLORE"));
+    if (i == 2) section(map_layout, QStringLiteral("REFINE"));
+    if (i == 6) section(map_layout, QStringLiteral("FILL & KEEP OUT"));
+    auto *action = new QAction(studio_icon(entry.icon), QString::fromUtf8(entry.label), this);
+    if (entry.mode == OccupancyInteractionMode::Erase) action->setObjectName(QStringLiteral("erase_rect"));
+    if (entry.mode == OccupancyInteractionMode::ObstacleMarker) action->setObjectName(QStringLiteral("mark_obstacle"));
     action->setToolTip(QString::fromUtf8(entry.tip));
     action->setCheckable(true);
     occupancy_group->addAction(action);
-    if (first) {
-      action->setChecked(true);
-      occupancy_mode_button->setDefaultAction(action);
+    if (i == 0) action->setChecked(true);
+    if (i < 6) tool_row(map_layout, action, map_page);
+    else {
+      area_menu->addAction(action);
+      if (i == 6) {
+        area_button = tool_row(map_layout, action, map_page);
+        area_button->setObjectName(QStringLiteral("areaTool"));
+        area_button->setMenu(area_menu);
+        area_button->setPopupMode(QToolButton::MenuButtonPopup);
+      }
     }
-    first = false;
-    const OccupancyInteractionMode mode = entry.mode;
-    connect(action, &QAction::triggered, this, [this, mode, action, occupancy_mode_button]() {
-      occupancy_mode_button->setDefaultAction(action);
-      set_occupancy_mode(mode);
-      if (mode == OccupancyInteractionMode::Erase && !occupancy_viewer_->highlighted_cells().empty())
+    connect(action, &QAction::triggered, this, [this, entry]() {
+      set_occupancy_mode(entry.mode);
+      occupancy_tool_hint_->setText(QString::fromUtf8(entry.tip));
+      if (entry.mode == OccupancyInteractionMode::Erase && !occupancy_viewer_->highlighted_cells().empty())
         erase_selected_2d_cells();
     });
   }
-  occupancy_toolbar_->addSeparator();
-  auto *width_spin = new QDoubleSpinBox(this);
+  connect(area_menu, &QMenu::triggered, area_button, [area_button](QAction *action) {
+    area_button->setDefaultAction(action);
+  });
+  occupancy_parameters_ = new QWidget(map_page);
+  occupancy_parameters_->setObjectName(QStringLiteral("occupancyParameters"));
+  auto *line_form = new QVBoxLayout(occupancy_parameters_);
+  line_form->setContentsMargins(10, 10, 10, 10);
+  line_form->addWidget(new QLabel(QStringLiteral("Line / marker width"), occupancy_parameters_));
+  auto *width_spin = new QDoubleSpinBox(occupancy_parameters_);
   width_spin->setRange(0.01, 10.0);
   width_spin->setSingleStep(0.05);
   width_spin->setDecimals(2);
   width_spin->setValue(0.20);
-  width_spin->setPrefix(QStringLiteral("Width "));
   width_spin->setSuffix(QStringLiteral(" m"));
-  width_spin->setFixedWidth(116);
-  width_spin->setToolTip(QStringLiteral("Obstacle line width or marker footprint in meters; markers use at least one cell"));
-  occupancy_toolbar_->addWidget(width_spin);
-  connect(width_spin, qOverload<double>(&QDoubleSpinBox::valueChanged), occupancy_viewer_,
-          &OccupancyViewer::set_obstacle_width);
-  occupancy_toolbar_->addSeparator();
-  auto *finish_polygon_action = occupancy_toolbar_->addAction(QStringLiteral("Close polygon"));
-  connect(finish_polygon_action, &QAction::triggered, occupancy_viewer_, &OccupancyViewer::finish_polygon);
-  auto *undo_vertex_action = occupancy_toolbar_->addAction(QStringLiteral("Undo vertex"));
-  connect(undo_vertex_action, &QAction::triggered, occupancy_viewer_, &OccupancyViewer::pop_polygon_vertex);
-  auto *fit_action = occupancy_toolbar_->addAction(QStringLiteral("Fit (F)"));
+  line_form->addWidget(width_spin);
+  map_layout->addWidget(occupancy_parameters_);
+  occupancy_parameters_->hide();
+  connect(width_spin, qOverload<double>(&QDoubleSpinBox::valueChanged), occupancy_viewer_, &OccupancyViewer::set_obstacle_width);
+  map_layout->addStretch();
+  occupancy_tool_hint_ = new QLabel(QStringLiteral("Drag to pan. Scroll to zoom.\nUse Linked inspect to compare with 3D."), map_page);
+  occupancy_tool_hint_->setProperty("role", "muted");
+  occupancy_tool_hint_->setWordWrap(true);
+  map_layout->addWidget(occupancy_tool_hint_);
+  add_page(map_page, QStringLiteral("2D tools"));
+  editor_layout->addWidget(editor_tabs_);
+  editor_dock->setWidget(editor_panel);
+  editor_dock->setMinimumWidth(240);
+  addDockWidget(Qt::LeftDockWidgetArea, editor_dock);
+  resizeDocks({editor_dock}, {248}, Qt::Horizontal);
+  view_menu_->addSeparator();
+  view_menu_->addAction(editor_dock->toggleViewAction());
+
+  auto *fit_action = occupancy_toolbar_->addAction(studio_icon(StudioIcon::Fit), QStringLiteral("Fit (F)"));
   connect(fit_action, &QAction::triggered, occupancy_viewer_, &OccupancyViewer::fit_map);
-  occupancy_toolbar_->addSeparator();
+  finish_polygon_action_ = occupancy_toolbar_->addAction(studio_icon(StudioIcon::Polygon), QStringLiteral("Close polygon"));
+  connect(finish_polygon_action_, &QAction::triggered, occupancy_viewer_, &OccupancyViewer::finish_polygon);
+  undo_vertex_action_ = occupancy_toolbar_->addAction(studio_icon(StudioIcon::Undo), QStringLiteral("Undo vertex"));
+  connect(undo_vertex_action_, &QAction::triggered, occupancy_viewer_, &OccupancyViewer::pop_polygon_vertex);
+  finish_polygon_action_->setVisible(false);
+  undo_vertex_action_->setVisible(false);
   occupancy_toolbar_->addAction(confirm_review_action_);
-  occupancy_toolbar_->setVisible(false);
+  confirm_review_action_->setVisible(false);
+  connect(confirm_review_action_, &QAction::changed, this, [this]() {
+    if (confirm_review_action_->isVisible() != confirm_review_action_->isEnabled())
+      confirm_review_action_->setVisible(confirm_review_action_->isEnabled());
+  });
+  occupancy_toolbar_->hide();
+}
+
+void MainWindow::create_workspace() {
+  auto *workspace = new QWidget(this);
+  auto *layout = new QVBoxLayout(workspace);
+  layout->setContentsMargins(16, 12, 16, 16);
+  layout->setSpacing(0);
+  auto *header = new QFrame(workspace);
+  header->setObjectName(QStringLiteral("workspaceHeader"));
+  auto *header_layout = new QVBoxLayout(header);
+  header_layout->setContentsMargins(18, 16, 18, 8);
+  header_layout->setSpacing(8);
+  auto *title_row = new QHBoxLayout();
+  auto *titles = new QVBoxLayout();
+  titles->setSpacing(4);
+  source_name_label_ = new QLabel(QStringLiteral("Your map workspace"), header);
+  source_name_label_->setObjectName(QStringLiteral("sourceName"));
+  source_name_label_->setTextFormat(Qt::PlainText);
+  source_name_label_->setMinimumWidth(0);
+  source_name_label_->setMaximumWidth(360);
+  titles->addWidget(source_name_label_);
+  workspace_caption_ = new QLabel(QStringLiteral("Open a map package to begin"), header);
+  workspace_caption_->setProperty("role", "muted");
+  titles->addWidget(workspace_caption_);
+  title_row->addLayout(titles, 1);
+  auto *view_control = new QFrame(header);
+  view_control->setObjectName(QStringLiteral("viewControl"));
+  auto *view_layout = new QHBoxLayout(view_control);
+  view_layout->setContentsMargins(3, 3, 3, 3);
+  view_layout->setSpacing(2);
+  show_3d_action_->setIcon(studio_icon(StudioIcon::Cloud));
+  show_2d_action_->setIcon(studio_icon(StudioIcon::Map));
+  linked_action_->setIcon(studio_icon(StudioIcon::Inspect));
+  const QString labels[] = {QStringLiteral("3D"), QStringLiteral("2D"), QStringLiteral("Compare")};
+  int index = 0;
+  for (auto *action : {show_3d_action_, show_2d_action_, linked_action_}) {
+    auto *button = new QToolButton(view_control);
+    button->setObjectName(QStringLiteral("viewSwitch"));
+    button->setDefaultAction(action);
+    const QString label = labels[index++];
+    button->setText(label);
+    connect(action, &QAction::changed, button, [button, label]() { button->setText(label); });
+    button->setToolTip(action->text() + QStringLiteral(" · ") + action->shortcut().toString());
+    button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    view_layout->addWidget(button);
+  }
+  title_row->addWidget(view_control);
+  header_layout->addLayout(title_row);
+  auto *controls = new QHBoxLayout();
+  controls->setContentsMargins(0, 0, 0, 0);
+  controls->setSpacing(8);
+  controls->addWidget(toolbar_3d_);
+  controls->addWidget(occupancy_toolbar_);
+  controls->addStretch();
+  header_layout->addLayout(controls);
+  layout->addWidget(header);
+  layout->addWidget(view_splitter_, 1);
+  setCentralWidget(workspace);
 }
 
 void MainWindow::create_workflow_dock() {
   workflow_panel_ = new WorkflowPanel(this);
   workflow_dock_ = new QDockWidget(QStringLiteral("Publish Workflow"), this);
   workflow_dock_->setObjectName(QStringLiteral("workflow_dock"));
+  workflow_dock_->setFeatures(QDockWidget::DockWidgetClosable);
   workflow_dock_->setWidget(workflow_panel_);
   workflow_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
   addDockWidget(Qt::RightDockWidgetArea, workflow_dock_);
-  workflow_dock_->setMinimumWidth(360);
+  workflow_dock_->setMinimumWidth(340);
+  resizeDocks({workflow_dock_}, {365}, Qt::Horizontal);
   auto *toggle = workflow_dock_->toggleViewAction();
-  toggle->setText(QStringLiteral("Publish Workflow Panel"));
+  toggle->setText(QStringLiteral("Workflow"));
+  toggle->setIcon(studio_icon(StudioIcon::Workflow));
+  toggle->setToolTip(QStringLiteral("Workflow, parameters and tool output · Ctrl+W"));
+  auto *toggle_button = new QToolButton(this);
+  toggle_button->setObjectName(QStringLiteral("workflowToggle"));
+  toggle_button->setDefaultAction(toggle);
+  toggle_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  findChild<QToolBar *>(QStringLiteral("workspaceToolbar"))->addWidget(toggle_button);
+  workflow_dock_->hide();
   toggle->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_W));
   if (view_menu_) {
     view_menu_->addSeparator();
@@ -675,6 +917,7 @@ bool MainWindow::activate_pcd(const QString &path, LoadedPointCloud loaded, QStr
   }
   disable_xy_link();
   refinement_model_.clear();
+  map_view_path_.clear();
   occupancy_viewer_->clear_map();
   saved_2d_directory_.clear();
   saved_2d_fingerprint_.clear();
@@ -792,6 +1035,7 @@ bool MainWindow::load_navigation_dir_into_2d(const QString &directory, QString *
       }
     }
   }
+  map_view_path_ = yaml;
   refinement_model_ = std::move(restored);
   occupancy_viewer_->set_refinement_model(&refinement_model_);
   occupancy_viewer_->set_map(std::move(map));
@@ -873,6 +1117,7 @@ bool MainWindow::open_occupancy_map(const QString &path, QString *error) {
     return false;
   }
   disable_xy_link();
+  map_view_path_ = path;
   refinement_model_ = std::move(restored);
   saved_2d_fingerprint_ = QString::fromStdString(refinement_model_.active_fingerprint());
   saved_2d_directory_ = QFileInfo::exists(history) ? QFileInfo(path).absolutePath() : QString();
@@ -1408,7 +1653,10 @@ void MainWindow::select_height_band_dialog() {
 // ---------------------------------------------------------------------------
 // Editing
 
-void MainWindow::reset_camera() { viewer_->reset_camera(); }
+void MainWindow::reset_camera() {
+  if (viewer_->isHidden()) occupancy_viewer_->reset_view();
+  else viewer_->reset_camera();
+}
 
 void MainWindow::undo_edit() {
   if (viewer_->isHidden() || (!occupancy_viewer_->isHidden() && occupancy_viewer_->hasFocus())) {
@@ -1431,7 +1679,7 @@ void MainWindow::redo_edit() {
 void MainWindow::delete_selected() {
   if (viewer_->isHidden() || (!occupancy_viewer_->isHidden() && occupancy_viewer_->hasFocus())) return;
   if (viewer_->mode() != InteractionMode::Delete) {
-    statusBar()->showMessage(QStringLiteral("Switch to Delete mode (toolbar or X) first"), 3000);
+    statusBar()->showMessage(QStringLiteral("Switch to Delete mode (3D tools or X) first"), 3000);
     return;
   }
   if (selection_manager_.delete_selected()) {
@@ -1457,19 +1705,29 @@ void MainWindow::set_front_view() { viewer_->front_view(); }
 void MainWindow::set_top_view() { viewer_->top_view(); }
 
 void MainWindow::show_3d_view() {
+  if (!viewer_->isHidden() && !occupancy_viewer_->isHidden())
+    linked_view_sizes_ = view_splitter_->sizes();
+  show_3d_action_->setChecked(true);
+  editor_tabs_->setCurrentIndex(0);
   viewer_->show();
   occupancy_viewer_->hide();
   if (occupancy_toolbar_) occupancy_toolbar_->setVisible(false);
   if (toolbar_3d_) toolbar_3d_->setVisible(true);
+  update_workspace_title();
   statusBar()->showMessage(viewer_->stats_text());
 }
 
 void MainWindow::show_2d_view() {
+  if (!viewer_->isHidden() && !occupancy_viewer_->isHidden())
+    linked_view_sizes_ = view_splitter_->sizes();
+  show_2d_action_->setChecked(true);
+  editor_tabs_->setCurrentIndex(1);
   sync_xy_highlight();
   viewer_->hide();
   occupancy_viewer_->show();
   if (occupancy_toolbar_) occupancy_toolbar_->setVisible(true);
   if (toolbar_3d_) toolbar_3d_->setVisible(false);
+  update_workspace_title();
   statusBar()->showMessage(refinement_model_.has_map()
                                ? QStringLiteral("2D navigation view")
                                : QStringLiteral("2D view: no layers yet - run step 3 or open a map.yaml"));
@@ -1504,9 +1762,13 @@ void MainWindow::sync_xy_highlight() {
 
 void MainWindow::show_linked_view() {
   if (!xy_link_enabled_) {
+    (occupancy_viewer_->isHidden() ? show_3d_action_ : show_2d_action_)->setChecked(true);
     statusBar()->showMessage(QStringLiteral("Open a map package containing matching point cloud and 2D map. Separate files do not support linked inspection."), 7000);
     return;
   }
+  const bool entering = viewer_->isHidden() || occupancy_viewer_->isHidden();
+  linked_action_->setChecked(true);
+  editor_tabs_->setCurrentIndex(1);
   // Inspection should rotate on left drag, even after a 3D selection/delete
   // operation. Changing mode keeps the selected points and XY overlay intact.
   set_mode_navigate();
@@ -1515,9 +1777,23 @@ void MainWindow::show_linked_view() {
   viewer_->show();
   occupancy_toolbar_->show();
   toolbar_3d_->show();
+  if (entering) {
+    view_splitter_->setSizes(linked_view_sizes_.isEmpty()
+        ? QList<int>{view_splitter_->width() / 2, view_splitter_->width() / 2}
+        : linked_view_sizes_);
+    QTimer::singleShot(0, occupancy_viewer_, &OccupancyViewer::fit_map);
+  }
+  update_workspace_title();
 }
 
-void MainWindow::set_occupancy_mode(OccupancyInteractionMode mode) { occupancy_viewer_->set_mode(mode); }
+void MainWindow::set_occupancy_mode(OccupancyInteractionMode mode) {
+  occupancy_viewer_->set_mode(mode);
+  occupancy_parameters_->setVisible(mode == OccupancyInteractionMode::Obstacle ||
+                                    mode == OccupancyInteractionMode::ObstacleMarker);
+  const bool polygon = occupancy_mode_uses_polygon(mode);
+  finish_polygon_action_->setVisible(polygon);
+  undo_vertex_action_->setVisible(polygon);
+}
 
 void MainWindow::erase_selected_2d_cells() {
   if (!xy_link_enabled_ || !refinement_model_.has_map()) {
@@ -1627,7 +1903,22 @@ void MainWindow::sync_edit_fingerprints() {
   refresh_workflow();
 }
 
+void MainWindow::update_workspace_title() {
+  if (source_name_label_) {
+    const QString path = xy_link_enabled_ ? linked_package_root_
+                         : occupancy_viewer_->isHidden() ? source_path_ : map_view_path_;
+    source_name_label_->setText(path.isEmpty() ? QStringLiteral("Your map workspace") : QFileInfo(path).fileName());
+    workspace_caption_->setText(xy_link_enabled_ ? QStringLiteral("Linked map package · 2D & 3D")
+        : !occupancy_viewer_->isHidden() && occupancy_viewer_->has_map()
+            ? QStringLiteral("Navigation map · %1 × %2 cells").arg(occupancy_viewer_->map().width()).arg(occupancy_viewer_->map().height())
+        : viewer_->has_cloud() ? QStringLiteral("Point cloud · %L1 points").arg(viewer_->point_count())
+        : QStringLiteral("Open a map package to begin"));
+    source_name_label_->setToolTip(path);
+  }
+}
+
 void MainWindow::refresh_workflow() {
+  update_workspace_title();
   if (!workflow_panel_) return;
   workflow_panel_->refresh(session_, tool_runner_.is_running());
   save_2d_action_->setEnabled(refinement_model_.has_map() && !tool_runner_.is_running());
@@ -2135,7 +2426,11 @@ void MainWindow::show_workflow_help() {
           "Source ROS 2 and workspace overlays before launching Studio to locate external tools."));
 }
 
-void MainWindow::show_stats(const QString &text) { statusBar()->showMessage(text); }
+void MainWindow::show_stats(const QString &text) {
+  if (sender() == viewer_ && viewer_->isHidden()) return;
+  if (sender() == occupancy_viewer_ && occupancy_viewer_->isHidden()) return;
+  statusBar()->showMessage(text);
+}
 
 void MainWindow::closeEvent(QCloseEvent *event) {
   if (tool_runner_.is_running()) {

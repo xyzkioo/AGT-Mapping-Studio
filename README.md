@@ -158,3 +158,5 @@ Optimized PCD map artifact
 ## 独立离线地图处理
 
 算法包：[agt_map_processing](processing/agt_map_processing/README.md)；通用执行器：[agt_map_runner](processing/agt_map_runner/README.md)。工具箱入口：`bash scripts/process_map.sh --package <地图数据包> --algorithm agt.offline_navigation --output <新目录>`。地图数据和 `processing_profile.json` 存放在外部数据目录；Studio 自动发现算法并负责查看与编辑。
+
+当前分支的功能、Qt 界面、验证结果及尚未合入的上游变化见 [与原仓库的差异说明](docs/upstream_differences_20261009.md)。

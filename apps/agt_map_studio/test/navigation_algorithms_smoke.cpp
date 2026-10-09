@@ -1,5 +1,6 @@
 // End-to-end test of the existing navigation action; no extra UI controls.
 #include "ui/MainWindow.hpp"
+#include "ui/StudioStyle.hpp"
 #include "viewer/PointCloudViewer.hpp"
 #include "occupancy/OccupancyViewer.hpp"
 #include "ui/WorkflowPanel.hpp"
@@ -33,6 +34,7 @@
 
 int main(int argc,char **argv) {
   QApplication application(argc,argv);
+  agt_map_studio::apply_studio_style(application);
   if (argc == 2 && QString::fromLocal8Bit(argv[1]) == "--check-edit-persistence") {
     using namespace agt_map_studio;
     QTemporaryDir temp;

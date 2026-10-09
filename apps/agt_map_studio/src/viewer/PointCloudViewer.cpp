@@ -392,7 +392,7 @@ void PointCloudViewer::resizeGL(int width, int height) {
 
 void PointCloudViewer::paintGL() {
   const QColor background = dark_background_ ? QColor(18, 22, 28)
-                                             : QColor(255, 255, 255);
+                                             : QColor(250, 251, 253);
   glClearColor(background.redF(), background.greenF(), background.blueF(), 1.0F);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -450,8 +450,21 @@ void PointCloudViewer::paintGL() {
   }
 
   QPainter painter(this);
-  painter.setPen(dark_background_ ? Qt::white : Qt::black);
-  painter.drawText(12, 22, stats_text());
+  painter.setRenderHint(QPainter::Antialiasing);
+  const QColor overlay_text = dark_background_ ? QColor("#e5ecf7") : QColor("#526078");
+  const QColor overlay_background = dark_background_ ? QColor(37, 51, 74, 230)
+                                                     : QColor(255, 255, 255, 235);
+  const QString summary = QStringLiteral("%1 points  ·  %2 selected  ·  %3 deleted")
+      .arg(point_count())
+      .arg(selection_manager_ ? selection_manager_->selected_count() : 0U)
+      .arg(selection_manager_ ? selection_manager_->deleted_count() : 0U);
+  const int summary_width = std::min(width() - 24, painter.fontMetrics().horizontalAdvance(summary) + 24);
+  painter.setPen(Qt::NoPen);
+  painter.setBrush(overlay_background);
+  painter.drawRoundedRect(QRectF(12, 12, summary_width, 30), 6, 6);
+  painter.setPen(overlay_text);
+  painter.drawText(QRect(24, 12, summary_width - 24, 30), Qt::AlignVCenter,
+                   painter.fontMetrics().elidedText(summary, Qt::ElideRight, summary_width - 24));
   if (selecting_ && tool_ == SelectionTool::ScreenRect && selection_box_.is_valid()) {
     QPen pen(QColor(30, 120, 255), 2, Qt::DashLine);
     painter.setPen(pen);
@@ -470,7 +483,7 @@ void PointCloudViewer::paintGL() {
                      QStringLiteral("%1 pts, double-click or Enter to close, Esc cancels")
                          .arg(pending_polygon_.size()));
   }
-  if (tool_ == SelectionTool::Sphere && mode_ != InteractionMode::Navigate) {
+  if (tool_ == SelectionTool::Sphere && mode_ != InteractionMode::Navigate && underMouse()) {
     painter.setPen(QPen(QColor(30, 120, 255), 1, Qt::DashLine));
     painter.setBrush(Qt::NoBrush);
     painter.drawEllipse(last_mouse_position_, 12, 12);
@@ -481,7 +494,11 @@ void PointCloudViewer::paintGL() {
     const int legend_width = 180;
     const int legend_height = 12;
     const int legend_x = std::max(12, width() - legend_width - 18);
-    const int legend_y = 14;
+    const int legend_y = height() - 54;
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(overlay_background);
+    painter.drawRoundedRect(QRectF(legend_x - 10, legend_y - 10, legend_width + 20, 54), 6, 6);
+    painter.setPen(overlay_text);
     QLinearGradient gradient(legend_x, legend_y,
                               legend_x + legend_width, legend_y);
     gradient.setColorAt(0.0, QColor(45, 60, 220));
@@ -490,6 +507,7 @@ void PointCloudViewer::paintGL() {
     gradient.setColorAt(0.75, QColor(245, 210, 35));
     gradient.setColorAt(1.0, QColor(220, 35, 35));
     painter.fillRect(legend_x, legend_y, legend_width, legend_height, gradient);
+    painter.setBrush(Qt::NoBrush);
     painter.drawRect(legend_x, legend_y, legend_width, legend_height);
     if (scalar_coloring_) {
       painter.drawText(legend_x, legend_y + 30,

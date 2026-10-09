@@ -45,6 +45,7 @@ add_executable(map_viewer
   src/workflow/WorkflowSession.cpp
   src/ui/WorkflowPanel.cpp
   src/ui/MainWindow.cpp
+  src/ui/StudioStyle.cpp
   src/ui/NavigationAlgorithms.cpp
 )
 

@@ -2,6 +2,7 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
+#include "ui/StudioStyle.hpp"
 #include <QApplication>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
@@ -14,6 +15,7 @@
 
 int main(int argc, char **argv) {
   QApplication application(argc, argv);
+  agt_map_studio::apply_studio_style(application);
   application.setApplicationName(QStringLiteral("agt_map_studio"));
   application.setApplicationVersion(QStringLiteral("0.3.0"));
 
